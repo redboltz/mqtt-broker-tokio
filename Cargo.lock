@@ -865,6 +865,8 @@ dependencies = [
 [[package]]
 name = "mqtt-endpoint-tokio"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "29e95280290eb729467165f49fe8397e4b975c3b139df7533c45591a8141411b"
 dependencies = [
  "derive_builder",
  "futures",

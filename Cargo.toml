@@ -18,7 +18,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Core MQTT functionality
-mqtt-endpoint-tokio = { path = "../mqtt-endpoint-tokio" }
+mqtt-endpoint-tokio = "0.1"
 
 # Application framework
 anyhow = "1.0"
