@@ -49,6 +49,10 @@ tracing-appender = "0.2"
 
 # System utilities
 num_cpus = "1.0"
+socket2 = "0.5"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tokio-test = "0.4"

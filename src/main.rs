@@ -25,7 +25,7 @@ mod broker;
 mod subscription_store;
 
 use mqtt_endpoint_tokio::mqtt_ep;
-use broker::{BrokerManager, SubscriptionMessage};
+use broker::BrokerManager;
 use clap::Parser;
 use futures::future;
 use std::fs::File;
@@ -34,7 +34,9 @@ use std::sync::Arc;
 use tokio_rustls::{TlsAcceptor, rustls};
 use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
 use tokio_tungstenite::tungstenite::http::HeaderValue;
+
 use tracing::{error, info, trace};
+use socket2::SockRef;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -66,6 +68,30 @@ struct Args {
     /// Path to server private key file (required when tls_port or ws_tls_port is specified)
     #[arg(long)]
     server_key: Option<String>,
+
+    /// Enable TCP_NODELAY socket option
+    #[arg(long, default_value_t = true)]
+    socket_no_delay: bool,
+
+    /// TCP socket send buffer size in bytes
+    #[arg(long, default_value_t = 8 * 1024 * 1024)]
+    socket_send_buf_size: usize,
+
+    /// TCP socket receive buffer size in bytes
+    #[arg(long, default_value_t = 8 * 1024 * 1024)]
+    socket_recv_buf_size: usize,
+
+    /// MQTT endpoint receive buffer size for tokio stream reads in bytes
+    #[arg(long, default_value_t = 64 * 1024)]
+    ep_recv_buf_size: usize,
+
+    /// Enable SO_REUSEPORT for load balancing across threads (Linux only)
+    #[arg(long, default_value_t = true)]
+    socket_reuseport: bool,
+
+    /// TCP keepalive time in seconds (0 to disable)
+    #[arg(long, default_value_t = 0)]
+    socket_keepalive_time: u32,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -130,6 +156,86 @@ fn load_tls_acceptor(cert_path: &str, key_path: &str) -> anyhow::Result<TlsAccep
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
 
+/// Configure socket options for optimal throughput
+fn configure_socket_options(
+    stream: &tokio::net::TcpStream,
+    no_delay: bool,
+    send_buf_size: usize,
+    recv_buf_size: usize,
+    keepalive_time: u32,
+) -> anyhow::Result<()> {
+    // Set TCP_NODELAY
+    stream.set_nodelay(no_delay)
+        .map_err(|e| anyhow::anyhow!("Failed to set TCP_NODELAY: {}", e))?;
+
+    let sock_ref = SockRef::from(stream);
+
+    // Set buffer sizes
+    sock_ref.set_send_buffer_size(send_buf_size)
+        .map_err(|e| anyhow::anyhow!("Failed to set send buffer size: {}", e))?;
+    sock_ref.set_recv_buffer_size(recv_buf_size)
+        .map_err(|e| anyhow::anyhow!("Failed to set recv buffer size: {}", e))?;
+
+    // Set TCP keepalive
+    if keepalive_time > 0 {
+        sock_ref.set_keepalive(true)
+            .map_err(|e| anyhow::anyhow!("Failed to enable keepalive: {}", e))?;
+
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::io::AsRawFd;
+            let fd = stream.as_raw_fd();
+            unsafe {
+                let optval = keepalive_time as libc::c_int;
+                if libc::setsockopt(
+                    fd,
+                    libc::IPPROTO_TCP,
+                    libc::TCP_KEEPIDLE,
+                    &optval as *const _ as *const libc::c_void,
+                    std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                ) != 0 {
+                    return Err(anyhow::anyhow!("Failed to set TCP_KEEPIDLE"));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Configure listener socket options for optimal performance
+fn configure_listener_socket(
+    listener: &tokio::net::TcpListener,
+    reuseport: bool,
+) -> anyhow::Result<()> {
+    let sock_ref = SockRef::from(listener);
+
+    // Always set SO_REUSEADDR
+    sock_ref.set_reuse_address(true)
+        .map_err(|e| anyhow::anyhow!("Failed to set SO_REUSEADDR: {}", e))?;
+
+    // Set SO_REUSEPORT (Linux only)
+    #[cfg(target_os = "linux")]
+    if reuseport {
+        use std::os::unix::io::AsRawFd;
+        let fd = listener.as_raw_fd();
+        unsafe {
+            let optval: libc::c_int = 1;
+            if libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_REUSEPORT,
+                &optval as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            ) != 0 {
+                return Err(anyhow::anyhow!("Failed to set SO_REUSEPORT"));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 async fn async_main(log_level: tracing::Level, threads: usize, args: Args) -> anyhow::Result<()> {
     // Initialize tracing with specified log level
     // Allow application logs at the specified level, suppress verbose logs from external crates
@@ -159,6 +265,24 @@ async fn async_main(log_level: tracing::Level, threads: usize, args: Args) -> an
         .init();
 
     info!("Starting MQTT Broker with log level: {log_level}, worker threads: {threads}");
+    info!("Socket configuration - no_delay: {}, send_buf_size: {} bytes, recv_buf_size: {} bytes",
+          args.socket_no_delay, args.socket_send_buf_size, args.socket_recv_buf_size);
+    info!("Socket advanced - reuseport: {}, keepalive_time: {}s",
+          args.socket_reuseport, args.socket_keepalive_time);
+    info!("Endpoint configuration - recv_buf_size: {} bytes", args.ep_recv_buf_size);
+
+    if let Some(port) = args.tcp_port {
+        info!("TCP port: {port}");
+    }
+    if let Some(port) = args.tls_port {
+        info!("TLS port: {port}");
+    }
+    if let Some(port) = args.ws_port {
+        info!("WebSocket port: {port}");
+    }
+    if let Some(port) = args.ws_tls_port {
+        info!("WebSocket+TLS port: {port}");
+    }
 
     // Validate TLS configuration if TLS ports are specified
     let tls_required = args.tls_port.is_some() || args.ws_tls_port.is_some();
@@ -170,7 +294,7 @@ async fn async_main(log_level: tracing::Level, threads: usize, args: Args) -> an
         }
     }
 
-    let broker = BrokerManager::new().await?;
+    let broker = BrokerManager::new(args.ep_recv_buf_size).await?;
     let mut tasks = Vec::new();
 
     // TCP listener
@@ -178,14 +302,31 @@ async fn async_main(log_level: tracing::Level, threads: usize, args: Args) -> an
         info!("Starting TCP listener on port {port}");
         let bind_addr = format!("0.0.0.0:{port}");
         let tcp_listener = tokio::net::TcpListener::bind(&bind_addr).await?;
+        configure_listener_socket(&tcp_listener, args.socket_reuseport)?;
         info!("Listening on TCP port {port} for MQTT (dual-version support)");
 
         let broker_clone = broker.clone();
+        let socket_no_delay = args.socket_no_delay;
+        let socket_send_buf_size = args.socket_send_buf_size;
+        let socket_recv_buf_size = args.socket_recv_buf_size;
+        let socket_keepalive_time = args.socket_keepalive_time;
         let tcp_task = tokio::spawn(async move {
             loop {
                 match tcp_listener.accept().await {
                     Ok((stream, addr)) => {
                         trace!("New TCP connection from: {addr}");
+
+                        // Configure socket options - reject connection on critical failures
+                        if let Err(e) = configure_socket_options(
+                            &stream,
+                            socket_no_delay,
+                            socket_send_buf_size,
+                            socket_recv_buf_size,
+                            socket_keepalive_time,
+                        ) {
+                            error!("Failed to configure socket options for {addr}: {e}");
+                            continue;
+                        }
                         let broker = broker_clone.clone();
                         let transport = mqtt_ep::transport::TcpTransport::from_stream(stream);
                         tokio::spawn(async move {
@@ -209,6 +350,7 @@ async fn async_main(log_level: tracing::Level, threads: usize, args: Args) -> an
         let acceptor = load_tls_acceptor(cert_path, key_path)?;
         let bind_addr = format!("0.0.0.0:{port}");
         let tls_listener = tokio::net::TcpListener::bind(&bind_addr).await?;
+        configure_listener_socket(&tls_listener, args.socket_reuseport)?;
         info!("Listening on TLS port {port} for MQTT (dual-version support)");
 
         let broker_clone = broker.clone();
@@ -244,6 +386,7 @@ async fn async_main(log_level: tracing::Level, threads: usize, args: Args) -> an
         info!("Starting WebSocket listener on port {port}");
         let bind_addr = format!("0.0.0.0:{port}");
         let ws_listener = tokio::net::TcpListener::bind(&bind_addr).await?;
+        configure_listener_socket(&ws_listener, args.socket_reuseport)?;
         info!("Listening on WebSocket port {port} for MQTT (dual-version support)");
 
         let broker_clone = broker.clone();
@@ -300,6 +443,7 @@ async fn async_main(log_level: tracing::Level, threads: usize, args: Args) -> an
         let acceptor = load_tls_acceptor(cert_path, key_path)?;
         let bind_addr = format!("0.0.0.0:{port}");
         let ws_tls_listener = tokio::net::TcpListener::bind(&bind_addr).await?;
+        configure_listener_socket(&ws_tls_listener, args.socket_reuseport)?;
         info!("Listening on WebSocket+TLS port {port} for MQTT (dual-version support)");
 
         let broker_clone = broker.clone();

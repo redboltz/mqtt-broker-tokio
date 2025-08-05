@@ -24,6 +24,7 @@
 use mqtt_endpoint_tokio::mqtt_ep;
 use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info, trace};
@@ -58,11 +59,14 @@ pub struct BrokerManager {
 
     /// Channel to send subscription management messages
     subscription_tx: mpsc::Sender<SubscriptionMessage>,
+
+    /// Endpoint receive buffer size
+    ep_recv_buf_size: usize,
 }
 
 impl BrokerManager {
     /// Create a new broker manager
-    pub async fn new() -> anyhow::Result<Self> {
+    pub async fn new(ep_recv_buf_size: usize) -> anyhow::Result<Self> {
         let subscription_store = Arc::new(SubscriptionStore::new());
         let (subscription_tx, subscription_rx) = mpsc::channel(1000);
 
@@ -75,6 +79,7 @@ impl BrokerManager {
         Ok(Self {
             subscription_store,
             subscription_tx,
+            ep_recv_buf_size,
         })
     }
 
@@ -84,12 +89,26 @@ impl BrokerManager {
         T: mqtt_ep::transport::TransportOps + Send + 'static,
     {
         // Create Endpoint with Version::Undetermined for dual-version support
-        let endpoint: mqtt_ep::GenericEndpoint<mqtt_ep::role::Server, u16> =
-            mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::Undetermined);
+        let endpoint: mqtt_ep::Endpoint<mqtt_ep::role::Server> =
+            mqtt_ep::Endpoint::new(mqtt_ep::Version::Undetermined);
 
         // Attach the connection (transport setup)
+        let opts = mqtt_ep::connection_option::ConnectionOption::builder()
+            .pingreq_send_interval_ms(0u64)
+            .auto_pub_response(true)
+            .auto_ping_response(true)
+            .auto_map_topic_alias_send(false)
+            .auto_replace_topic_alias_send(false)
+            .pingresp_recv_timeout_ms(0u64)
+            .connection_establish_timeout_ms(100000u64)
+            .shutdown_timeout_ms(5000u64)
+            .recv_buffer_size(self.ep_recv_buf_size)
+            .restore_packets(Vec::new())
+            .restore_qos2_publish_handled(HashSet::new())
+            .build()
+            .expect("ConnectionOption should be valid");
         match endpoint
-            .attach(transport, mqtt_endpoint_tokio::mqtt_ep::Mode::Server)
+            .attach_with_options(transport, mqtt_endpoint_tokio::mqtt_ep::Mode::Server, opts)
             .await
         {
             Ok(()) => {
@@ -232,7 +251,7 @@ impl BrokerManager {
             Ok(packet) => {
                 trace!("🔍 Received first packet: {:?}", packet.packet_type());
                 match &packet {
-                    mqtt_ep::packet::GenericPacket::V3_1_1Connect(connect) => {
+                    mqtt_ep::packet::Packet::V3_1_1Connect(connect) => {
                         let extracted_id = if connect.client_id().is_empty() {
                             format!("auto-{}", Uuid::new_v4().simple())
                         } else {
@@ -256,7 +275,7 @@ impl BrokerManager {
                         trace!("CONNACK successfully sent to client {extracted_id}");
                         (extracted_id, "v3.1.1".to_string())
                     }
-                    mqtt_ep::packet::GenericPacket::V5_0Connect(connect) => {
+                    mqtt_ep::packet::Packet::V5_0Connect(connect) => {
                         let extracted_id = if connect.client_id().is_empty() {
                             format!("auto-{}", Uuid::new_v4().simple())
                         } else {
