@@ -70,7 +70,7 @@ struct Args {
     server_key: Option<String>,
 
     /// Enable TCP_NODELAY socket option
-    #[arg(long, default_value_t = true)]
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = true, value_parser = clap::value_parser!(bool))]
     socket_no_delay: bool,
 
     /// TCP socket send buffer size in bytes
@@ -86,7 +86,7 @@ struct Args {
     ep_recv_buf_size: usize,
 
     /// Enable SO_REUSEPORT for load balancing across threads (Linux only)
-    #[arg(long, default_value_t = true)]
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = true, value_parser = clap::value_parser!(bool))]
     socket_reuseport: bool,
 
     /// TCP keepalive time in seconds (0 to disable)
