@@ -18,7 +18,8 @@ path = "src/main.rs"
 
 [dependencies]
 # Core MQTT functionality
-mqtt-endpoint-tokio = "0.1"
+#mqtt-endpoint-tokio = "0.1"
+mqtt-endpoint-tokio = { git = "https://github.com/redboltz/mqtt-endpoint-tokio", branch = "add_sso", default-features = false, features = ["sso-str-24", "sso-bin-24", "sso-payload-128"] }
 
 # Application framework
 anyhow = "1.0"

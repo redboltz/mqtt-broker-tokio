@@ -24,7 +24,8 @@
 use mqtt_endpoint_tokio::mqtt_ep;
 use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
 
-use std::collections::HashSet;
+use mqtt_endpoint_tokio::mqtt_ep::HashSet;
+
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info, trace};
@@ -61,12 +62,12 @@ pub struct BrokerManager {
     subscription_tx: mpsc::Sender<SubscriptionMessage>,
 
     /// Endpoint receive buffer size
-    ep_recv_buf_size: usize,
+    ep_recv_buf_size: Option<usize>,
 }
 
 impl BrokerManager {
     /// Create a new broker manager
-    pub async fn new(ep_recv_buf_size: usize) -> anyhow::Result<Self> {
+    pub async fn new(ep_recv_buf_size: Option<usize>) -> anyhow::Result<Self> {
         let subscription_store = Arc::new(SubscriptionStore::new());
         let (subscription_tx, subscription_rx) = mpsc::channel(1000);
 
@@ -93,7 +94,7 @@ impl BrokerManager {
             mqtt_ep::Endpoint::new(mqtt_ep::Version::Undetermined);
 
         // Attach the connection (transport setup)
-        let opts = mqtt_ep::connection_option::ConnectionOption::builder()
+        let mut opts_builder = mqtt_ep::connection_option::ConnectionOption::builder()
             .pingreq_send_interval_ms(0u64)
             .auto_pub_response(true)
             .auto_ping_response(true)
@@ -102,10 +103,14 @@ impl BrokerManager {
             .pingresp_recv_timeout_ms(0u64)
             .connection_establish_timeout_ms(100000u64)
             .shutdown_timeout_ms(5000u64)
-            .recv_buffer_size(self.ep_recv_buf_size)
             .restore_packets(Vec::new())
-            .restore_qos2_publish_handled(HashSet::new())
-            .build()
+            .restore_qos2_publish_handled(HashSet::new());
+        
+        if let Some(recv_buf_size) = self.ep_recv_buf_size {
+            opts_builder = opts_builder.recv_buffer_size(recv_buf_size);
+        }
+        
+        let opts = opts_builder.build()
             .expect("ConnectionOption should be valid");
         match endpoint
             .attach_with_options(transport, mqtt_endpoint_tokio::mqtt_ep::Mode::Server, opts)
