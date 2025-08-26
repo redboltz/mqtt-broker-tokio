@@ -187,9 +187,9 @@ checksum = "2fd1289c04a9ea8cb22300a459a72a385d7c73d3259e2ed7dcb2af674838cfa9"
 
 [[package]]
 name = "clap"
-version = "4.5.45"
+version = "4.5.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fc0e74a703892159f5ae7d3aac52c8e6c392f5ae5f359c70b5881d60aaac318"
+checksum = "2c5e4fcf9c21d2e544ca1ee9d8552de13019a42aa7dbf32747fa7aaf1df76e57"
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -197,9 +197,9 @@ dependencies = [
 
 [[package]]
 name = "clap_builder"
-version = "4.5.44"
+version = "4.5.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3e7f4214277f3c7aa526a59dd3fbe306a370daee1f8b7b8c987069cd8e888a8"
+checksum = "fecb53a0e6fcfb055f686001bc2e2592fa527efaf38dbe81a6a9563562e57d41"
 dependencies = [
  "anstream",
  "anstyle",
@@ -867,8 +867,8 @@ dependencies = [
 
 [[package]]
 name = "mqtt-endpoint-tokio"
-version = "0.4.0"
-source = "git+https://github.com/redboltz/mqtt-endpoint-tokio?branch=add_sso#60f627da53c41a66c48ecb0cd38bb87a2d64a336"
+version = "0.3.0"
+source = "git+https://github.com/redboltz/mqtt-endpoint-tokio?branch=add_sso#85e1737731bbba2eb5e09f14a0150d2ac03c833a"
 dependencies = [
  "derive_builder",
  "futures",
@@ -888,8 +888,8 @@ dependencies = [
 
 [[package]]
 name = "mqtt-protocol-core"
-version = "0.4.0"
-source = "git+https://github.com/redboltz/mqtt-protocol-core?branch=add_sso_by_ff#43417c6e737ebba8444dee40be8b7c8416a190e2"
+version = "0.4.1"
+source = "git+https://github.com/redboltz/mqtt-protocol-core?branch=add_sso_by_ff#4eb92bd99a59c253abc27fea105edf3c8db01c12"
 dependencies = [
  "arrayvec",
  "delegate",
