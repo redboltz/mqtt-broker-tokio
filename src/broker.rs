@@ -24,7 +24,7 @@
 use mqtt_endpoint_tokio::mqtt_ep;
 use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
 
-use mqtt_endpoint_tokio::mqtt_ep::HashSet;
+use mqtt_endpoint_tokio::mqtt_ep::common::HashSet;
 
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
@@ -104,12 +104,12 @@ impl BrokerManager {
             .connection_establish_timeout_ms(100000u64)
             .shutdown_timeout_ms(5000u64)
             .restore_packets(Vec::new())
-            .restore_qos2_publish_handled(HashSet::new());
-        
+            .restore_qos2_publish_handled(HashSet::default());
+
         if let Some(recv_buf_size) = self.ep_recv_buf_size {
             opts_builder = opts_builder.recv_buffer_size(recv_buf_size);
         }
-        
+
         let opts = opts_builder.build()
             .expect("ConnectionOption should be valid");
         match endpoint
