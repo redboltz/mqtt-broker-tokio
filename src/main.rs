@@ -25,20 +25,20 @@ mod broker;
 mod subscription_store;
 mod tracing_setup;
 
-use mqtt_endpoint_tokio::mqtt_ep;
 use broker::BrokerManager;
-use tracing_setup::init_tracing;
 use clap::Parser;
 use futures::future;
+use mqtt_endpoint_tokio::mqtt_ep;
 use std::fs::File;
 use std::io::BufReader;
 use std::sync::Arc;
 use tokio_rustls::{TlsAcceptor, rustls};
 use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
 use tokio_tungstenite::tungstenite::http::HeaderValue;
+use tracing_setup::init_tracing;
 
-use tracing::{error, info, trace};
 use socket2::SockRef;
+use tracing::{error, info, trace};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -48,23 +48,23 @@ struct Args {
     /// Number of worker threads for async tasks
     #[arg(long)]
     worker_threads: Option<usize>,
-    
+
     /// Number of blocking threads for blocking operations
     #[arg(long)]
     max_blocking_threads: Option<usize>,
-    
+
     /// Enable thread keep alive for worker threads
     #[arg(long)]
     thread_keep_alive: Option<bool>,
-    
+
     /// Thread stack size in bytes
     #[arg(long)]
     thread_stack_size: Option<usize>,
-    
+
     /// Global queue interval for work stealing (microseconds)
     #[arg(long)]
     global_queue_interval: Option<u32>,
-    
+
     /// Event loop interval for polling (microseconds)  
     #[arg(long)]
     event_interval: Option<u32>,
@@ -134,27 +134,31 @@ fn main() -> anyhow::Result<()> {
     // Build custom tokio runtime
     let mut runtime_builder = tokio::runtime::Builder::new_multi_thread();
     runtime_builder.worker_threads(worker_threads).enable_all();
-    
+
     if let Some(max_blocking) = args.max_blocking_threads {
         runtime_builder.max_blocking_threads(max_blocking);
     }
-    
+
     if let Some(keep_alive) = args.thread_keep_alive {
-        runtime_builder.thread_keep_alive(std::time::Duration::from_secs(if keep_alive { 10 } else { 0 }));
+        runtime_builder.thread_keep_alive(std::time::Duration::from_secs(if keep_alive {
+            10
+        } else {
+            0
+        }));
     }
-    
+
     if let Some(stack_size) = args.thread_stack_size {
         runtime_builder.thread_stack_size(stack_size);
     }
-    
+
     if let Some(interval) = args.global_queue_interval {
         runtime_builder.global_queue_interval(interval);
     }
-    
+
     if let Some(interval) = args.event_interval {
         runtime_builder.event_interval(interval);
     }
-    
+
     let runtime = runtime_builder.build()?;
 
     runtime.block_on(async_main(log_level, worker_threads, args))
@@ -193,51 +197,69 @@ fn load_tls_acceptor(cert_path: &str, key_path: &str) -> anyhow::Result<TlsAccep
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
 
-/// Configure socket options for optimal throughput
-fn configure_socket_options(
+/// Configure individual socket options if specified
+fn configure_individual_socket_options(
     stream: &tokio::net::TcpStream,
-    no_delay: bool,
-    send_buf_size: usize,
-    recv_buf_size: usize,
-    keepalive_time: u32,
-) -> anyhow::Result<()> {
-    // Set TCP_NODELAY
-    stream.set_nodelay(no_delay)
-        .map_err(|e| anyhow::anyhow!("Failed to set TCP_NODELAY: {}", e))?;
+    addr: &std::net::SocketAddr,
+    no_delay: Option<bool>,
+    send_buf_size: Option<usize>,
+    recv_buf_size: Option<usize>,
+    keepalive_time: Option<u32>,
+) {
+    // Configure TCP_NODELAY if specified
+    if let Some(no_delay) = no_delay {
+        if let Err(e) = stream.set_nodelay(no_delay) {
+            error!("Failed to set TCP_NODELAY for {addr}: {e}");
+        }
+    }
 
     let sock_ref = SockRef::from(stream);
 
-    // Set buffer sizes
-    sock_ref.set_send_buffer_size(send_buf_size)
-        .map_err(|e| anyhow::anyhow!("Failed to set send buffer size: {}", e))?;
-    sock_ref.set_recv_buffer_size(recv_buf_size)
-        .map_err(|e| anyhow::anyhow!("Failed to set recv buffer size: {}", e))?;
-
-    // Set TCP keepalive
-    if keepalive_time > 0 {
-        sock_ref.set_keepalive(true)
-            .map_err(|e| anyhow::anyhow!("Failed to enable keepalive: {}", e))?;
-
-        #[cfg(target_os = "linux")]
-        {
-            use std::os::unix::io::AsRawFd;
-            let fd = stream.as_raw_fd();
-            unsafe {
-                let optval = keepalive_time as libc::c_int;
-                if libc::setsockopt(
-                    fd,
-                    libc::IPPROTO_TCP,
-                    libc::TCP_KEEPIDLE,
-                    &optval as *const _ as *const libc::c_void,
-                    std::mem::size_of::<libc::c_int>() as libc::socklen_t,
-                ) != 0 {
-                    return Err(anyhow::anyhow!("Failed to set TCP_KEEPIDLE"));
-                }
+    // Configure send buffer size if specified
+    if let Some(send_buf_size) = send_buf_size {
+        if send_buf_size > 0 {
+            if let Err(e) = sock_ref.set_send_buffer_size(send_buf_size) {
+                error!("Failed to set send buffer size for {addr}: {e}");
             }
         }
     }
 
-    Ok(())
+    // Configure receive buffer size if specified
+    if let Some(recv_buf_size) = recv_buf_size {
+        if recv_buf_size > 0 {
+            if let Err(e) = sock_ref.set_recv_buffer_size(recv_buf_size) {
+                error!("Failed to set recv buffer size for {addr}: {e}");
+            }
+        }
+    }
+
+    // Configure keepalive if specified
+    if let Some(keepalive_time) = keepalive_time {
+        if keepalive_time > 0 {
+            if let Err(e) = sock_ref.set_keepalive(true) {
+                error!("Failed to enable keepalive for {addr}: {e}");
+            }
+
+            #[cfg(target_os = "linux")]
+            {
+                use std::os::unix::io::AsRawFd;
+                let fd = stream.as_raw_fd();
+                unsafe {
+                    let optval = keepalive_time as libc::c_int;
+                    if libc::setsockopt(
+                        fd,
+                        libc::IPPROTO_TCP,
+                        libc::TCP_KEEPIDLE,
+                        &optval as *const _ as *const libc::c_void,
+                        std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                    ) != 0
+                    {
+                        error!("Failed to set TCP_KEEPIDLE for {addr}");
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Configure listener socket options for optimal performance
@@ -248,7 +270,8 @@ fn configure_listener_socket(
     let sock_ref = SockRef::from(listener);
 
     // Always set SO_REUSEADDR
-    sock_ref.set_reuse_address(true)
+    sock_ref
+        .set_reuse_address(true)
         .map_err(|e| anyhow::anyhow!("Failed to set SO_REUSEADDR: {}", e))?;
 
     // Set SO_REUSEPORT (Linux only)
@@ -264,7 +287,8 @@ fn configure_listener_socket(
                 libc::SO_REUSEPORT,
                 &optval as *const _ as *const libc::c_void,
                 std::mem::size_of::<libc::c_int>() as libc::socklen_t,
-            ) != 0 {
+            ) != 0
+            {
                 return Err(anyhow::anyhow!("Failed to set SO_REUSEPORT"));
             }
         }
@@ -279,20 +303,67 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
 
     info!("Starting MQTT Broker with log level: {log_level}");
     info!("Tokio runtime configuration:");
-    info!("  --worker-threads        {}", args.worker_threads.unwrap_or_else(num_cpus::get));
-    info!("  --max-blocking-threads  {}", args.max_blocking_threads.map_or("None".to_string(), |v| v.to_string()));
-    info!("  --thread-keep-alive     {}", args.thread_keep_alive.map_or("None".to_string(), |v| v.to_string()));
-    info!("  --thread-stack-size     {}", args.thread_stack_size.map_or("None".to_string(), |v| v.to_string()));
-    info!("  --global-queue-interval {}", args.global_queue_interval.map_or("None".to_string(), |v| v.to_string()));
-    info!("  --event-interval        {}", args.event_interval.map_or("None".to_string(), |v| v.to_string()));
+    info!(
+        "  --worker-threads        {}",
+        args.worker_threads.unwrap_or_else(num_cpus::get)
+    );
+    info!(
+        "  --max-blocking-threads  {}",
+        args.max_blocking_threads
+            .map_or("None".to_string(), |v| v.to_string())
+    );
+    info!(
+        "  --thread-keep-alive     {}",
+        args.thread_keep_alive
+            .map_or("None".to_string(), |v| v.to_string())
+    );
+    info!(
+        "  --thread-stack-size     {}",
+        args.thread_stack_size
+            .map_or("None".to_string(), |v| v.to_string())
+    );
+    info!(
+        "  --global-queue-interval {}",
+        args.global_queue_interval
+            .map_or("None".to_string(), |v| v.to_string())
+    );
+    info!(
+        "  --event-interval        {}",
+        args.event_interval
+            .map_or("None".to_string(), |v| v.to_string())
+    );
     info!("Socket configuration:");
-    info!("  --socket-no-delay       {}", args.socket_no_delay.map_or("None".to_string(), |v| v.to_string()));
-    info!("  --socket-send-buf-size  {}", args.socket_send_buf_size.map_or("None".to_string(), |v| v.to_string()));
-    info!("  --socket-recv-buf-size  {}", args.socket_recv_buf_size.map_or("None".to_string(), |v| v.to_string()));
-    info!("  --socket-reuseport      {}", args.socket_reuseport.map_or("None".to_string(), |v| v.to_string()));
-    info!("  --socket-keepalive-time {}", args.socket_keepalive_time.map_or("None".to_string(), |v| v.to_string()));
+    info!(
+        "  --socket-no-delay       {}",
+        args.socket_no_delay
+            .map_or("None".to_string(), |v| v.to_string())
+    );
+    info!(
+        "  --socket-send-buf-size  {}",
+        args.socket_send_buf_size
+            .map_or("None".to_string(), |v| v.to_string())
+    );
+    info!(
+        "  --socket-recv-buf-size  {}",
+        args.socket_recv_buf_size
+            .map_or("None".to_string(), |v| v.to_string())
+    );
+    info!(
+        "  --socket-reuseport      {}",
+        args.socket_reuseport
+            .map_or("None".to_string(), |v| v.to_string())
+    );
+    info!(
+        "  --socket-keepalive-time {}",
+        args.socket_keepalive_time
+            .map_or("None".to_string(), |v| v.to_string())
+    );
     info!("Endpoint configuration:");
-    info!("  --ep-recv-buf-size      {}", args.ep_recv_buf_size.map_or("None".to_string(), |v| v.to_string()));
+    info!(
+        "  --ep-recv-buf-size      {}",
+        args.ep_recv_buf_size
+            .map_or("None".to_string(), |v| v.to_string())
+    );
 
     if let Some(port) = args.tcp_port {
         info!("TCP port: {port}");
@@ -341,38 +412,15 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
                     Ok((stream, addr)) => {
                         trace!("New TCP connection from: {addr}");
 
-                        // Configure socket options - reject connection on critical failures
-                        // Configure individual socket options only if specified
-                        if let Some(no_delay) = socket_no_delay {
-                            if let Err(e) = stream.set_nodelay(no_delay) {
-                                error!("Failed to set TCP_NODELAY for {addr}: {e}");
-                            }
-                        }
-                        
-                        let sock_ref = SockRef::from(&stream);
-                        if let Some(send_buf_size) = socket_send_buf_size {
-                            if send_buf_size > 0 {
-                                if let Err(e) = sock_ref.set_send_buffer_size(send_buf_size) {
-                                    error!("Failed to set send buffer size for {addr}: {e}");
-                                }
-                            }
-                        }
-                        
-                        if let Some(recv_buf_size) = socket_recv_buf_size {
-                            if recv_buf_size > 0 {
-                                if let Err(e) = sock_ref.set_recv_buffer_size(recv_buf_size) {
-                                    error!("Failed to set recv buffer size for {addr}: {e}");
-                                }
-                            }
-                        }
-                        
-                        if let Some(keepalive_time) = socket_keepalive_time {
-                            if keepalive_time > 0 {
-                                if let Err(e) = sock_ref.set_keepalive(true) {
-                                    error!("Failed to enable keepalive for {addr}: {e}");
-                                }
-                            }
-                        }
+                        // Configure socket options using shared function
+                        configure_individual_socket_options(
+                            &stream,
+                            &addr,
+                            socket_no_delay,
+                            socket_send_buf_size,
+                            socket_recv_buf_size,
+                            socket_keepalive_time,
+                        );
                         let broker = broker_clone.clone();
                         let transport = mqtt_ep::transport::TcpTransport::from_stream(stream);
                         tokio::spawn(async move {
@@ -402,11 +450,26 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
         info!("Listening on TLS port {port} for MQTT (dual-version support)");
 
         let broker_clone = broker.clone();
+        let socket_no_delay = args.socket_no_delay;
+        let socket_send_buf_size = args.socket_send_buf_size;
+        let socket_recv_buf_size = args.socket_recv_buf_size;
+        let socket_keepalive_time = args.socket_keepalive_time;
         let tls_task = tokio::spawn(async move {
             loop {
                 match tls_listener.accept().await {
                     Ok((stream, addr)) => {
                         trace!("New TLS connection from: {addr}");
+
+                        // Configure socket options before TLS handshake
+                        configure_individual_socket_options(
+                            &stream,
+                            &addr,
+                            socket_no_delay,
+                            socket_send_buf_size,
+                            socket_recv_buf_size,
+                            socket_keepalive_time,
+                        );
+
                         let broker = broker_clone.clone();
                         let acceptor = acceptor.clone();
                         tokio::spawn(async move {
@@ -440,11 +503,26 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
         info!("Listening on WebSocket port {port} for MQTT (dual-version support)");
 
         let broker_clone = broker.clone();
+        let socket_no_delay = args.socket_no_delay;
+        let socket_send_buf_size = args.socket_send_buf_size;
+        let socket_recv_buf_size = args.socket_recv_buf_size;
+        let socket_keepalive_time = args.socket_keepalive_time;
         let ws_task = tokio::spawn(async move {
             loop {
                 match ws_listener.accept().await {
                     Ok((stream, addr)) => {
                         trace!("New WebSocket connection from: {addr}");
+
+                        // Configure socket options before WebSocket handshake
+                        configure_individual_socket_options(
+                            &stream,
+                            &addr,
+                            socket_no_delay,
+                            socket_send_buf_size,
+                            socket_recv_buf_size,
+                            socket_keepalive_time,
+                        );
+
                         let _broker = broker_clone.clone();
                         tokio::spawn(async move {
                             // Use accept_async for simpler handling, then check subprotocol
@@ -499,11 +577,26 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
         info!("Listening on WebSocket+TLS port {port} for MQTT (dual-version support)");
 
         let broker_clone = broker.clone();
+        let socket_no_delay = args.socket_no_delay;
+        let socket_send_buf_size = args.socket_send_buf_size;
+        let socket_recv_buf_size = args.socket_recv_buf_size;
+        let socket_keepalive_time = args.socket_keepalive_time;
         let ws_tls_task = tokio::spawn(async move {
             loop {
                 match ws_tls_listener.accept().await {
                     Ok((stream, addr)) => {
                         trace!("New WebSocket+TLS connection from: {addr}");
+
+                        // Configure socket options before TLS handshake
+                        configure_individual_socket_options(
+                            &stream,
+                            &addr,
+                            socket_no_delay,
+                            socket_send_buf_size,
+                            socket_recv_buf_size,
+                            socket_keepalive_time,
+                        );
+
                         let broker = broker_clone.clone();
                         let acceptor = acceptor.clone();
                         tokio::spawn(async move {

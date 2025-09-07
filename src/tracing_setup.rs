@@ -1,13 +1,13 @@
 use anyhow::Result;
 use tracing_appender::non_blocking::WorkerGuard;
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Initialize tracing with efficient async logging setup
 /// Returns a WorkerGuard that must be kept alive for the duration of the program
 pub fn init_tracing(log_level: tracing::Level) -> Result<WorkerGuard> {
     // Create a non-blocking appender for stdout with async performance
     let (non_blocking_stdout, guard) = tracing_appender::non_blocking(std::io::stdout());
-    
+
     // Create the filter string for controlling log levels per crate
     let filter_string = format!(
         "mqtt_endpoint_tokio={},\
@@ -55,14 +55,14 @@ pub fn init_tracing(log_level: tracing::Level) -> Result<WorkerGuard> {
 
 /// Alternative initialization with file appender for production use
 pub fn init_tracing_with_file(
-    log_level: tracing::Level, 
-    log_dir: &str, 
-    log_file_prefix: &str
+    log_level: tracing::Level,
+    log_dir: &str,
+    log_file_prefix: &str,
 ) -> Result<WorkerGuard> {
     // Create a daily rolling file appender
     let file_appender = tracing_appender::rolling::daily(log_dir, log_file_prefix);
     let (non_blocking_file, guard) = tracing_appender::non_blocking(file_appender);
-    
+
     // Create the filter string
     let filter_string = format!(
         "mqtt_endpoint_tokio={},\

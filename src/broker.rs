@@ -110,7 +110,8 @@ impl BrokerManager {
             opts_builder = opts_builder.recv_buffer_size(recv_buf_size);
         }
 
-        let opts = opts_builder.build()
+        let opts = opts_builder
+            .build()
             .expect("ConnectionOption should be valid");
         match endpoint
             .attach_with_options(transport, mqtt_endpoint_tokio::mqtt_ep::Mode::Server, opts)
