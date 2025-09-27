@@ -82,12 +82,14 @@ struct Args {
     ws_port: Option<u16>,
     #[arg(long)]
     ws_tls_port: Option<u16>,
+    #[arg(long)]
+    quic_port: Option<u16>,
 
-    /// Path to server certificate file (required when tls_port or ws_tls_port is specified)
+    /// Path to server certificate file (required when tls_port, ws_tls_port, or quic_port is specified)
     #[arg(long)]
     server_crt: Option<String>,
 
-    /// Path to server private key file (required when tls_port or ws_tls_port is specified)
+    /// Path to server private key file (required when tls_port, ws_tls_port, or quic_port is specified)
     #[arg(long)]
     server_key: Option<String>,
 
@@ -117,6 +119,11 @@ struct Args {
 }
 
 fn main() -> anyhow::Result<()> {
+    // Initialize default CryptoProvider for rustls
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
     let args = Args::parse();
 
     // Parse log level
@@ -171,7 +178,7 @@ fn load_tls_acceptor(cert_path: &str, key_path: &str) -> anyhow::Result<TlsAccep
     let mut cert_reader = BufReader::new(cert_file);
     let cert_chain = rustls_pemfile::certs(&mut cert_reader)?
         .into_iter()
-        .map(rustls::Certificate)
+        .map(rustls::pki_types::CertificateDer::from)
         .collect();
 
     let key_file = File::open(key_path)
@@ -184,13 +191,16 @@ fn load_tls_acceptor(cert_path: &str, key_path: &str) -> anyhow::Result<TlsAccep
         // Reset reader and try PKCS1
         key_reader = BufReader::new(File::open(key_path)?);
         let rsa_keys = rustls_pemfile::rsa_private_keys(&mut key_reader)?;
-        rustls::PrivateKey(rsa_keys[0].clone())
+        rustls::pki_types::PrivateKeyDer::from(rustls::pki_types::PrivatePkcs1KeyDer::from(
+            rsa_keys[0].clone(),
+        ))
     } else {
-        rustls::PrivateKey(private_keys[0].clone())
+        rustls::pki_types::PrivateKeyDer::from(rustls::pki_types::PrivatePkcs8KeyDer::from(
+            private_keys[0].clone(),
+        ))
     };
 
     let config = rustls::ServerConfig::builder()
-        .with_safe_defaults()
         .with_no_client_auth()
         .with_single_cert(cert_chain, private_key)?;
 
@@ -377,13 +387,17 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
     if let Some(port) = args.ws_tls_port {
         info!("WebSocket+TLS port: {port}");
     }
+    if let Some(port) = args.quic_port {
+        info!("QUIC port: {port}");
+    }
 
     // Validate TLS configuration if TLS ports are specified
-    let tls_required = args.tls_port.is_some() || args.ws_tls_port.is_some();
+    let tls_required =
+        args.tls_port.is_some() || args.ws_tls_port.is_some() || args.quic_port.is_some();
     if tls_required {
         if args.server_crt.is_none() || args.server_key.is_none() {
             return Err(anyhow::anyhow!(
-                "TLS certificate (--server-crt) and private key (--server-key) are required when TLS ports (--tls-port or --ws-tls-port) are specified"
+                "TLS certificate (--server-crt) and private key (--server-key) are required when TLS ports (--tls-port, --ws-tls-port, or --quic-port) are specified"
             ));
         }
     }
@@ -643,9 +657,86 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
         tasks.push(ws_tls_task);
     }
 
+    // QUIC listener
+    if let Some(port) = args.quic_port {
+        info!("Starting QUIC listener on port {port}");
+        let cert_path = args.server_crt.as_ref().unwrap();
+        let key_path = args.server_key.as_ref().unwrap();
+
+        // Load certificates and private key for QUIC
+        let cert_file = File::open(cert_path).map_err(|e| {
+            anyhow::anyhow!("Failed to open certificate file '{}': {}", cert_path, e)
+        })?;
+        let mut cert_reader = BufReader::new(cert_file);
+        let cert_chain = rustls_pemfile::certs(&mut cert_reader)?
+            .into_iter()
+            .map(rustls::pki_types::CertificateDer::from)
+            .collect();
+
+        let key_file = File::open(key_path).map_err(|e| {
+            anyhow::anyhow!("Failed to open private key file '{}': {}", key_path, e)
+        })?;
+        let mut key_reader = BufReader::new(key_file);
+        let private_keys = rustls_pemfile::pkcs8_private_keys(&mut key_reader)?;
+        let private_key = if private_keys.is_empty() {
+            key_reader = BufReader::new(File::open(key_path)?);
+            let rsa_keys = rustls_pemfile::rsa_private_keys(&mut key_reader)?;
+            rustls::pki_types::PrivateKeyDer::from(rustls::pki_types::PrivatePkcs1KeyDer::from(
+                rsa_keys[0].clone(),
+            ))
+        } else {
+            rustls::pki_types::PrivateKeyDer::from(rustls::pki_types::PrivatePkcs8KeyDer::from(
+                private_keys[0].clone(),
+            ))
+        };
+
+        // Setup QUIC server config
+        let tls_config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(cert_chain, private_key)?;
+        let server_config = quinn::ServerConfig::with_crypto(Arc::new(
+            quinn::crypto::rustls::QuicServerConfig::try_from(tls_config)?,
+        ));
+        let bind_addr = format!("0.0.0.0:{port}").parse()?;
+        let quic_endpoint = quinn::Endpoint::server(server_config, bind_addr)?;
+
+        info!("Listening on QUIC port {port} for MQTT (dual-version support)");
+
+        let broker_clone = broker.clone();
+        let quic_task = tokio::spawn(async move {
+            while let Some(incoming) = quic_endpoint.accept().await {
+                let connection = match incoming.await {
+                    Ok(conn) => conn,
+                    Err(e) => {
+                        error!("Failed to establish QUIC connection: {e}");
+                        continue;
+                    }
+                };
+
+                let broker = broker_clone.clone();
+                tokio::spawn(async move {
+                    match connection.accept_bi().await {
+                        Ok((send_stream, recv_stream)) => {
+                            trace!("New QUIC connection established");
+                            let transport = mqtt_ep::transport::QuicTransport::from_streams(
+                                send_stream,
+                                recv_stream,
+                            );
+                            if let Err(e) = broker.handle_connection(transport).await {
+                                error!("QUIC connection error: {e}");
+                            }
+                        }
+                        Err(e) => error!("Failed to accept QUIC bidirectional stream: {e}"),
+                    }
+                });
+            }
+        });
+        tasks.push(quic_task);
+    }
+
     if tasks.is_empty() {
         return Err(anyhow::anyhow!(
-            "No listeners configured. Please specify at least one port (--tcp-port, --tls-port, --ws-port, or --ws-tls-port)"
+            "No listeners configured. Please specify at least one port (--tcp-port, --tls-port, --ws-port, --ws-tls-port, or --quic-port)"
         ));
     }
 

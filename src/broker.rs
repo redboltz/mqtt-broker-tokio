@@ -24,8 +24,6 @@
 use mqtt_endpoint_tokio::mqtt_ep;
 use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
 
-use mqtt_endpoint_tokio::mqtt_ep::common::HashSet;
-
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info, trace};
@@ -95,16 +93,12 @@ impl BrokerManager {
 
         // Attach the connection (transport setup)
         let mut opts_builder = mqtt_ep::connection_option::ConnectionOption::builder()
-            .pingreq_send_interval_ms(0u64)
             .auto_pub_response(true)
             .auto_ping_response(true)
             .auto_map_topic_alias_send(false)
             .auto_replace_topic_alias_send(false)
-            .pingresp_recv_timeout_ms(0u64)
-            .connection_establish_timeout_ms(100000u64)
-            .shutdown_timeout_ms(5000u64)
-            .restore_packets(Vec::new())
-            .restore_qos2_publish_handled(HashSet::default());
+            .connection_establish_timeout_ms(10_000u64)
+            .shutdown_timeout_ms(5_000u64);
 
         if let Some(recv_buf_size) = self.ep_recv_buf_size {
             opts_builder = opts_builder.recv_buffer_size(recv_buf_size);
