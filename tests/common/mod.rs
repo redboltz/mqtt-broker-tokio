@@ -20,18 +20,52 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-mod common;
-
-use common::{BROKER_PORT, BrokerProcess};
 use mqtt_endpoint_tokio::mqtt_ep;
+use std::process::{Child, Command};
+use std::time::Duration;
+use tokio::net::TcpStream;
 
-#[tokio::test]
-async fn test_connect_connack_disconnect() {
-    let _broker = BrokerProcess::start();
+pub const BROKER_PORT: u16 = 1883;
 
-    // Wait for broker to be ready
-    BrokerProcess::wait_ready().await;
+pub struct BrokerProcess {
+    child: Child,
+}
 
+impl BrokerProcess {
+    pub fn start() -> Self {
+        let child = Command::new("cargo")
+            .args(["run", "--", "--tcp-port", &BROKER_PORT.to_string()])
+            .spawn()
+            .expect("Failed to start broker");
+
+        BrokerProcess { child }
+    }
+
+    pub async fn wait_ready() {
+        // Wait for broker to start (max 30 seconds)
+        for _ in 0..60 {
+            if let Ok(stream) = TcpStream::connect(format!("127.0.0.1:{BROKER_PORT}")).await {
+                drop(stream);
+                // Wait a bit after connection check
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        panic!("Broker failed to start within 30 seconds");
+    }
+}
+
+impl Drop for BrokerProcess {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+pub async fn create_connected_endpoint(
+    client_id: &str,
+) -> mqtt_ep::Endpoint<mqtt_ep::role::Client> {
     // Connect via TCP
     let stream = mqtt_ep::transport::connect_helper::connect_tcp(
         &format!("127.0.0.1:{BROKER_PORT}"),
@@ -58,7 +92,7 @@ async fn test_connect_connack_disconnect() {
 
     // Create and send CONNECT packet
     let connect = mqtt_ep::packet::v5_0::Connect::builder()
-        .client_id("test_client")
+        .client_id(client_id)
         .expect("Failed to set client_id")
         .clean_start(true)
         .keep_alive(60)
@@ -83,18 +117,5 @@ async fn test_connect_connack_disconnect() {
         _ => panic!("Expected CONNACK, got {packet:?}"),
     }
 
-    // Create and send DISCONNECT packet
-    let disconnect = mqtt_ep::packet::v5_0::Disconnect::builder()
-        .reason_code(mqtt_ep::result_code::DisconnectReasonCode::NormalDisconnection)
-        .build()
-        .expect("Failed to build DISCONNECT");
-
     endpoint
-        .send(disconnect)
-        .await
-        .expect("Failed to send DISCONNECT");
-
-    // Verify that the connection is closed (next recv should return an error)
-    let result = endpoint.recv().await;
-    assert!(result.is_err(), "Connection should be closed");
 }
