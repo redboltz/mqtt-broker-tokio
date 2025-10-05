@@ -33,8 +33,18 @@ pub struct BrokerProcess {
 
 impl BrokerProcess {
     pub fn start() -> Self {
-        let child = Command::new("cargo")
-            .args(["run", "--", "--tcp-port", &BROKER_PORT.to_string()])
+        // Check if broker binary exists, if not provide helpful error
+        let broker_path = "target/debug/mqtt-broker";
+        if !std::path::Path::new(broker_path).exists() {
+            panic!(
+                "Broker binary not found at {broker_path}. \
+                 Please run 'cargo build --bin mqtt-broker' first."
+            );
+        }
+
+        // Run the built binary directly
+        let child = Command::new(broker_path)
+            .args(["--tcp-port", &BROKER_PORT.to_string()])
             .spawn()
             .expect("Failed to start broker");
 
