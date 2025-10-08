@@ -20,7 +20,6 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 use mqtt_endpoint_tokio::mqtt_ep;
-use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
 
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};

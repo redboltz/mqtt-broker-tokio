@@ -20,6 +20,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 mod broker;
+mod retained_store;
 mod subscription_store;
 mod tracing_setup;
 
