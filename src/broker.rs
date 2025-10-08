@@ -91,8 +91,8 @@ impl BrokerManager {
 
         // Attach the connection (transport setup)
         let mut opts_builder = mqtt_ep::connection_option::ConnectionOption::builder()
-            .auto_pub_response(true)
-            .auto_ping_response(true)
+            .auto_pub_response(false)
+            .auto_ping_response(false)
             .auto_map_topic_alias_send(false)
             .auto_replace_topic_alias_send(false)
             .connection_establish_timeout_ms(10_000u64)
@@ -245,7 +245,7 @@ impl BrokerManager {
         trace!("Starting endpoint task (waiting for CONNECT)");
 
         // First, wait for CONNECT packet
-        let (client_id, mqtt_version) = match endpoint.recv().await {
+        let client_id = match endpoint.recv().await {
             Ok(packet) => {
                 trace!("🔍 Received first packet: {:?}", packet.packet_type());
                 match &packet {
@@ -271,7 +271,7 @@ impl BrokerManager {
                         }
 
                         trace!("CONNACK successfully sent to client {extracted_id}");
-                        (extracted_id, "v3.1.1".to_string())
+                        extracted_id
                     }
                     mqtt_ep::packet::Packet::V5_0Connect(connect) => {
                         let extracted_id = if connect.client_id().is_empty() {
@@ -295,7 +295,7 @@ impl BrokerManager {
                         }
 
                         trace!("CONNACK successfully sent to client {extracted_id}");
-                        (extracted_id, "v5.0".to_string())
+                        extracted_id
                     }
                     _ => {
                         error!("Expected CONNECT packet, received: {packet:?}");
@@ -312,9 +312,9 @@ impl BrokerManager {
         // Create endpoint reference
         let endpoint_arc = Arc::new(endpoint);
         let endpoint_ref = EndpointRef::new(endpoint_arc.clone());
-        trace!("Registered client {client_id} with MQTT version {mqtt_version}");
+        trace!("Registered client {client_id}");
 
-        trace!("Starting main endpoint loop for client {client_id} ({mqtt_version})");
+        trace!("Starting main endpoint loop for client {client_id}");
 
         // Main packet processing loop
         loop {
@@ -327,7 +327,6 @@ impl BrokerManager {
                     if let Err(e) = Self::handle_received_packet_in_endpoint(
                         &client_id,
                         &packet,
-                        &mqtt_version,
                         &subscription_store,
                         &subscription_tx,
                         &endpoint_arc,
@@ -354,7 +353,6 @@ impl BrokerManager {
     async fn handle_received_packet_in_endpoint(
         client_id: &str,
         packet: &mqtt_ep::packet::Packet,
-        mqtt_version: &str,
         subscription_store: &Arc<SubscriptionStore>,
         subscription_tx: &mpsc::Sender<SubscriptionMessage>,
         endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
@@ -362,12 +360,26 @@ impl BrokerManager {
     ) -> anyhow::Result<()> {
         match packet {
             mqtt_ep::packet::Packet::V3_1_1Subscribe(sub) => {
-                Self::handle_subscribe_in_endpoint(sub, subscription_tx, endpoint, endpoint_ref)
-                    .await?;
+                Self::handle_subscribe(
+                    sub.packet_id(),
+                    sub.entries(),
+                    Vec::new(),
+                    subscription_tx,
+                    endpoint,
+                    endpoint_ref,
+                )
+                .await?;
             }
             mqtt_ep::packet::Packet::V5_0Subscribe(sub) => {
-                Self::handle_subscribe_in_endpoint_v5(sub, subscription_tx, endpoint, endpoint_ref)
-                    .await?;
+                Self::handle_subscribe(
+                    sub.packet_id(),
+                    sub.entries(),
+                    sub.props().to_vec(),
+                    subscription_tx,
+                    endpoint,
+                    endpoint_ref,
+                )
+                .await?;
             }
             mqtt_ep::packet::Packet::V3_1_1Unsubscribe(unsub) => {
                 Self::handle_unsubscribe_in_endpoint(
@@ -389,6 +401,8 @@ impl BrokerManager {
             }
             mqtt_ep::packet::Packet::V3_1_1Publish(pub_packet) => {
                 Self::handle_publish(
+                    endpoint,
+                    pub_packet.packet_id().unwrap_or(0),
                     pub_packet.topic_name(),
                     pub_packet.qos(),
                     pub_packet.retain(),
@@ -401,6 +415,8 @@ impl BrokerManager {
             }
             mqtt_ep::packet::Packet::V5_0Publish(pub_packet) => {
                 Self::handle_publish(
+                    endpoint,
+                    pub_packet.packet_id().unwrap_or(0),
                     pub_packet.topic_name(),
                     pub_packet.qos(),
                     pub_packet.retain(),
@@ -411,8 +427,71 @@ impl BrokerManager {
                 )
                 .await?;
             }
-            mqtt_ep::packet::Packet::V3_1_1Pingreq(_) | mqtt_ep::packet::Packet::V5_0Pingreq(_) => {
-                Self::send_pingresp_to_client(client_id, mqtt_version, endpoint).await?;
+            mqtt_ep::packet::Packet::V3_1_1Puback(_puback) => {
+                // QoS 1: Received PUBACK (client acknowledged our publish)
+                trace!("Received PUBACK from client {client_id}");
+            }
+            mqtt_ep::packet::Packet::V5_0Puback(_puback) => {
+                // QoS 1: Received PUBACK (client acknowledged our publish)
+                trace!("Received PUBACK from client {client_id}");
+            }
+            mqtt_ep::packet::Packet::V3_1_1Pubrec(pubrec) => {
+                // QoS 2: Received PUBREC, send PUBREL
+                Self::send_pubrel(
+                    endpoint,
+                    pubrec.packet_id(),
+                    mqtt_ep::result_code::PubrelReasonCode::Success,
+                    Vec::new(),
+                )
+                .await?;
+            }
+            mqtt_ep::packet::Packet::V5_0Pubrec(pubrec) => {
+                // QoS 2: Received PUBREC, send PUBREL
+                Self::send_pubrel(
+                    endpoint,
+                    pubrec.packet_id(),
+                    mqtt_ep::result_code::PubrelReasonCode::Success,
+                    Vec::new(),
+                )
+                .await?;
+            }
+            mqtt_ep::packet::Packet::V3_1_1Pubrel(pubrel) => {
+                // QoS 2: Received PUBREL, send PUBCOMP
+                Self::send_pubcomp(
+                    endpoint,
+                    pubrel.packet_id(),
+                    mqtt_ep::result_code::PubcompReasonCode::Success,
+                    Vec::new(),
+                )
+                .await?;
+            }
+            mqtt_ep::packet::Packet::V5_0Pubrel(pubrel) => {
+                // QoS 2: Received PUBREL, send PUBCOMP
+                Self::send_pubcomp(
+                    endpoint,
+                    pubrel.packet_id(),
+                    mqtt_ep::result_code::PubcompReasonCode::Success,
+                    Vec::new(),
+                )
+                .await?;
+            }
+            mqtt_ep::packet::Packet::V3_1_1Pubcomp(_pubcomp) => {
+                // QoS 2: Received PUBCOMP (client acknowledged our PUBREL)
+                trace!("Received PUBCOMP from client {client_id}");
+            }
+            mqtt_ep::packet::Packet::V5_0Pubcomp(_pubcomp) => {
+                // QoS 2: Received PUBCOMP (client acknowledged our PUBREL)
+                trace!("Received PUBCOMP from client {client_id}");
+            }
+            mqtt_ep::packet::Packet::V3_1_1Pingreq(_) => {
+                Self::send_pingresp(client_id, endpoint).await?;
+            }
+            mqtt_ep::packet::Packet::V5_0Pingreq(_) => {
+                Self::send_pingresp(client_id, endpoint).await?;
+            }
+            mqtt_ep::packet::Packet::V5_0Auth(_auth) => {
+                // AUTH packet handling (placeholder for future implementation)
+                trace!("Received AUTH from client {client_id}");
             }
             mqtt_ep::packet::Packet::V3_1_1Disconnect(_)
             | mqtt_ep::packet::Packet::V5_0Disconnect(_) => {
@@ -425,17 +504,24 @@ impl BrokerManager {
         Ok(())
     }
 
-    /// Handle SUBSCRIBE in endpoint task with proper ordering
-    async fn handle_subscribe_in_endpoint(
-        subscribe: &mqtt_ep::packet::v3_1_1::Subscribe,
+    /// Handle SUBSCRIBE in endpoint task (unified for both v3.1.1 and v5.0)
+    async fn handle_subscribe(
+        packet_id: u16,
+        entries: &[mqtt_ep::packet::SubEntry],
+        props: Vec<mqtt_ep::packet::Property>,
         subscription_tx: &mpsc::Sender<SubscriptionMessage>,
         endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
         endpoint_ref: &EndpointRef,
     ) -> anyhow::Result<()> {
-        let packet_id = subscribe.packet_id();
+        // Extract SubscriptionIdentifier from properties
+        let sub_id = props.iter().find_map(|prop| match prop {
+            mqtt_ep::packet::Property::SubscriptionIdentifier(_) => prop.as_u32(),
+            _ => None,
+        });
+
         let mut topic_filters = Vec::new();
 
-        for entry in subscribe.entries() {
+        for entry in entries {
             let topic_filter = entry.topic_filter().to_string();
             let qos = entry.sub_opts().qos();
             topic_filters.push((topic_filter.clone(), qos));
@@ -448,53 +534,6 @@ impl BrokerManager {
             .send(SubscriptionMessage::Subscribe {
                 endpoint: endpoint_ref.clone(),
                 topics: topic_filters,
-                sub_id: None,
-                response_tx,
-            })
-            .await?;
-
-        let return_codes = response_rx.await?;
-
-        // Send SUBACK directly via endpoint
-        let suback_packet = mqtt_ep::packet::v3_1_1::Suback::builder()
-            .packet_id(packet_id)
-            .return_codes(return_codes)
-            .build()
-            .unwrap();
-
-        endpoint.send(suback_packet).await?;
-        trace!("✅ SUBSCRIBE processing completed successfully");
-        Ok(())
-    }
-
-    /// Handle SUBSCRIBE v5.0 in endpoint task
-    async fn handle_subscribe_in_endpoint_v5(
-        subscribe: &mqtt_ep::packet::v5_0::Subscribe,
-        subscription_tx: &mpsc::Sender<SubscriptionMessage>,
-        endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
-        endpoint_ref: &EndpointRef,
-    ) -> anyhow::Result<()> {
-        let packet_id = subscribe.packet_id();
-
-        // Extract SubscriptionIdentifier from properties
-        let sub_id = subscribe.props().iter().find_map(|prop| match prop {
-            mqtt_ep::packet::Property::SubscriptionIdentifier(_) => prop.as_u32(),
-            _ => None,
-        });
-
-        let mut topic_filters = Vec::new();
-
-        for entry in subscribe.entries() {
-            let topic_filter = entry.topic_filter().to_string();
-            let qos = entry.sub_opts().qos();
-            topic_filters.push((topic_filter, qos));
-        }
-
-        let (response_tx, response_rx) = oneshot::channel();
-        subscription_tx
-            .send(SubscriptionMessage::Subscribe {
-                endpoint: endpoint_ref.clone(),
-                topics: topic_filters,
                 sub_id,
                 response_tx,
             })
@@ -502,33 +541,10 @@ impl BrokerManager {
 
         let return_codes = response_rx.await?;
 
-        // Convert SubAckReturnCode to SubackReasonCode for v5.0
-        let reason_codes: Vec<mqtt_ep::result_code::SubackReasonCode> = return_codes
-            .into_iter()
-            .map(|rc| match rc {
-                mqtt_ep::result_code::SubackReturnCode::SuccessMaximumQos0 => {
-                    mqtt_ep::result_code::SubackReasonCode::GrantedQos0
-                }
-                mqtt_ep::result_code::SubackReturnCode::SuccessMaximumQos1 => {
-                    mqtt_ep::result_code::SubackReasonCode::GrantedQos1
-                }
-                mqtt_ep::result_code::SubackReturnCode::SuccessMaximumQos2 => {
-                    mqtt_ep::result_code::SubackReasonCode::GrantedQos2
-                }
-                mqtt_ep::result_code::SubackReturnCode::Failure => {
-                    mqtt_ep::result_code::SubackReasonCode::UnspecifiedError
-                }
-            })
-            .collect();
+        // Send SUBACK using the unified function
+        Self::send_suback(endpoint, packet_id, return_codes, props).await?;
 
-        let suback_packet = mqtt_ep::packet::v5_0::Suback::builder()
-            .packet_id(packet_id)
-            .reason_codes(reason_codes)
-            .build()
-            .unwrap();
-
-        endpoint.send(suback_packet).await?;
-        trace!("✅ SUBSCRIBE v5.0 processing completed successfully");
+        trace!("✅ SUBSCRIBE processing completed successfully");
         Ok(())
     }
 
@@ -683,8 +699,261 @@ impl BrokerManager {
         Ok(())
     }
 
+    /// Send PUBACK packet to endpoint (supports both v3.1.1 and v5.0)
+    async fn send_puback(
+        endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
+        packet_id: u16,
+        reason_code: mqtt_ep::result_code::PubackReasonCode,
+        props: Vec<mqtt_ep::packet::Property>,
+    ) -> anyhow::Result<()> {
+        let endpoint_version = endpoint
+            .get_protocol_version()
+            .await
+            .unwrap_or(mqtt_ep::Version::V5_0);
+
+        match endpoint_version {
+            mqtt_ep::Version::V3_1_1 => {
+                let puback = mqtt_ep::packet::v3_1_1::Puback::builder()
+                    .packet_id(packet_id)
+                    .build()
+                    .unwrap();
+                endpoint.send(puback).await?;
+            }
+            mqtt_ep::Version::V5_0 => {
+                let mut builder = mqtt_ep::packet::v5_0::Puback::builder()
+                    .packet_id(packet_id)
+                    .reason_code(reason_code);
+
+                if !props.is_empty() {
+                    builder = builder.props(props);
+                }
+
+                let puback = builder.build().unwrap();
+                endpoint.send(puback).await?;
+            }
+            _ => {
+                return Err(anyhow::anyhow!("Unsupported MQTT version"));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Send PUBREC packet to endpoint (supports both v3.1.1 and v5.0)
+    async fn send_pubrec(
+        endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
+        packet_id: u16,
+        reason_code: mqtt_ep::result_code::PubrecReasonCode,
+        props: Vec<mqtt_ep::packet::Property>,
+    ) -> anyhow::Result<()> {
+        let endpoint_version = endpoint
+            .get_protocol_version()
+            .await
+            .unwrap_or(mqtt_ep::Version::V5_0);
+
+        match endpoint_version {
+            mqtt_ep::Version::V3_1_1 => {
+                let pubrec = mqtt_ep::packet::v3_1_1::Pubrec::builder()
+                    .packet_id(packet_id)
+                    .build()
+                    .unwrap();
+                endpoint.send(pubrec).await?;
+            }
+            mqtt_ep::Version::V5_0 => {
+                let mut builder = mqtt_ep::packet::v5_0::Pubrec::builder()
+                    .packet_id(packet_id)
+                    .reason_code(reason_code);
+
+                if !props.is_empty() {
+                    builder = builder.props(props);
+                }
+
+                let pubrec = builder.build().unwrap();
+                endpoint.send(pubrec).await?;
+            }
+            _ => {
+                return Err(anyhow::anyhow!("Unsupported MQTT version"));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Send PUBREL packet to endpoint (supports both v3.1.1 and v5.0)
+    async fn send_pubrel(
+        endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
+        packet_id: u16,
+        reason_code: mqtt_ep::result_code::PubrelReasonCode,
+        props: Vec<mqtt_ep::packet::Property>,
+    ) -> anyhow::Result<()> {
+        let endpoint_version = endpoint
+            .get_protocol_version()
+            .await
+            .unwrap_or(mqtt_ep::Version::V5_0);
+
+        match endpoint_version {
+            mqtt_ep::Version::V3_1_1 => {
+                let pubrel = mqtt_ep::packet::v3_1_1::Pubrel::builder()
+                    .packet_id(packet_id)
+                    .build()
+                    .unwrap();
+                endpoint.send(pubrel).await?;
+            }
+            mqtt_ep::Version::V5_0 => {
+                let mut builder = mqtt_ep::packet::v5_0::Pubrel::builder()
+                    .packet_id(packet_id)
+                    .reason_code(reason_code);
+
+                if !props.is_empty() {
+                    builder = builder.props(props);
+                }
+
+                let pubrel = builder.build().unwrap();
+                endpoint.send(pubrel).await?;
+            }
+            _ => {
+                return Err(anyhow::anyhow!("Unsupported MQTT version"));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Send PUBCOMP packet to endpoint (supports both v3.1.1 and v5.0)
+    async fn send_pubcomp(
+        endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
+        packet_id: u16,
+        reason_code: mqtt_ep::result_code::PubcompReasonCode,
+        props: Vec<mqtt_ep::packet::Property>,
+    ) -> anyhow::Result<()> {
+        let endpoint_version = endpoint
+            .get_protocol_version()
+            .await
+            .unwrap_or(mqtt_ep::Version::V5_0);
+
+        match endpoint_version {
+            mqtt_ep::Version::V3_1_1 => {
+                let pubcomp = mqtt_ep::packet::v3_1_1::Pubcomp::builder()
+                    .packet_id(packet_id)
+                    .build()
+                    .unwrap();
+                endpoint.send(pubcomp).await?;
+            }
+            mqtt_ep::Version::V5_0 => {
+                let mut builder = mqtt_ep::packet::v5_0::Pubcomp::builder()
+                    .packet_id(packet_id)
+                    .reason_code(reason_code);
+
+                if !props.is_empty() {
+                    builder = builder.props(props);
+                }
+
+                let pubcomp = builder.build().unwrap();
+                endpoint.send(pubcomp).await?;
+            }
+            _ => {
+                return Err(anyhow::anyhow!("Unsupported MQTT version"));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Send SUBACK packet to endpoint (supports both v3.1.1 and v5.0)
+    async fn send_suback(
+        endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
+        packet_id: u16,
+        return_codes: Vec<mqtt_ep::result_code::SubackReturnCode>,
+        props: Vec<mqtt_ep::packet::Property>,
+    ) -> anyhow::Result<()> {
+        let endpoint_version = endpoint
+            .get_protocol_version()
+            .await
+            .unwrap_or(mqtt_ep::Version::V5_0);
+
+        match endpoint_version {
+            mqtt_ep::Version::V3_1_1 => {
+                let suback = mqtt_ep::packet::v3_1_1::Suback::builder()
+                    .packet_id(packet_id)
+                    .return_codes(return_codes)
+                    .build()
+                    .unwrap();
+                endpoint.send(suback).await?;
+            }
+            mqtt_ep::Version::V5_0 => {
+                // Convert SubAckReturnCode to SubackReasonCode for v5.0
+                let reason_codes: Vec<mqtt_ep::result_code::SubackReasonCode> = return_codes
+                    .into_iter()
+                    .map(|rc| match rc {
+                        mqtt_ep::result_code::SubackReturnCode::SuccessMaximumQos0 => {
+                            mqtt_ep::result_code::SubackReasonCode::GrantedQos0
+                        }
+                        mqtt_ep::result_code::SubackReturnCode::SuccessMaximumQos1 => {
+                            mqtt_ep::result_code::SubackReasonCode::GrantedQos1
+                        }
+                        mqtt_ep::result_code::SubackReturnCode::SuccessMaximumQos2 => {
+                            mqtt_ep::result_code::SubackReasonCode::GrantedQos2
+                        }
+                        mqtt_ep::result_code::SubackReturnCode::Failure => {
+                            mqtt_ep::result_code::SubackReasonCode::UnspecifiedError
+                        }
+                    })
+                    .collect();
+
+                let mut builder = mqtt_ep::packet::v5_0::Suback::builder()
+                    .packet_id(packet_id)
+                    .reason_codes(reason_codes);
+
+                if !props.is_empty() {
+                    builder = builder.props(props);
+                }
+
+                let suback = builder.build().unwrap();
+                endpoint.send(suback).await?;
+            }
+            _ => {
+                return Err(anyhow::anyhow!("Unsupported MQTT version"));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Send PINGRESP packet to endpoint (supports both v3.1.1 and v5.0)
+    async fn send_pingresp(
+        client_id: &str,
+        endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
+    ) -> anyhow::Result<()> {
+        let endpoint_version = endpoint
+            .get_protocol_version()
+            .await
+            .unwrap_or(mqtt_ep::Version::V5_0);
+
+        match endpoint_version {
+            mqtt_ep::Version::V3_1_1 => {
+                let pingresp = mqtt_ep::packet::v3_1_1::Pingresp::builder()
+                    .build()
+                    .unwrap();
+                endpoint.send(pingresp).await?;
+            }
+            mqtt_ep::Version::V5_0 => {
+                let pingresp = mqtt_ep::packet::v5_0::Pingresp::builder().build().unwrap();
+                endpoint.send(pingresp).await?;
+            }
+            _ => {
+                return Err(anyhow::anyhow!("Unsupported MQTT version"));
+            }
+        }
+
+        trace!("PINGRESP sent to client {client_id}");
+        Ok(())
+    }
+
     /// Handle PUBLISH packet (unified for both v3.1.1 and v5.0)
+    #[allow(clippy::too_many_arguments)]
     async fn handle_publish(
+        endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
+        packet_id: u16,
         topic: &str,
         qos: mqtt_ep::packet::Qos,
         retain: bool,
@@ -694,9 +963,58 @@ impl BrokerManager {
         subscription_store: &Arc<SubscriptionStore>,
     ) -> anyhow::Result<()> {
         let subscriptions = subscription_store.find_subscribers(topic).await;
+        let has_subscribers = !subscriptions.is_empty();
 
-        if subscriptions.is_empty() {
+        if !has_subscribers {
             trace!("No subscribers found for topic '{topic}'");
+        }
+
+        // Send QoS response based on QoS level
+        match qos {
+            mqtt_ep::packet::Qos::AtMostOnce => {
+                // QoS 0: No response needed
+            }
+            mqtt_ep::packet::Qos::AtLeastOnce => {
+                // QoS 1: Send PUBACK
+                let endpoint_version = endpoint
+                    .get_protocol_version()
+                    .await
+                    .unwrap_or(mqtt_ep::Version::V5_0);
+
+                let (reason_code, props) =
+                    if endpoint_version == mqtt_ep::Version::V5_0 && !has_subscribers {
+                        (
+                            mqtt_ep::result_code::PubackReasonCode::NoMatchingSubscribers,
+                            Vec::new(),
+                        )
+                    } else {
+                        (mqtt_ep::result_code::PubackReasonCode::Success, Vec::new())
+                    };
+
+                Self::send_puback(endpoint, packet_id, reason_code, props).await?;
+            }
+            mqtt_ep::packet::Qos::ExactlyOnce => {
+                // QoS 2: Send PUBREC
+                let endpoint_version = endpoint
+                    .get_protocol_version()
+                    .await
+                    .unwrap_or(mqtt_ep::Version::V5_0);
+
+                let (reason_code, props) =
+                    if endpoint_version == mqtt_ep::Version::V5_0 && !has_subscribers {
+                        (
+                            mqtt_ep::result_code::PubrecReasonCode::NoMatchingSubscribers,
+                            Vec::new(),
+                        )
+                    } else {
+                        (mqtt_ep::result_code::PubrecReasonCode::Success, Vec::new())
+                    };
+
+                Self::send_pubrec(endpoint, packet_id, reason_code, props).await?;
+            }
+        }
+
+        if !has_subscribers {
             return Ok(());
         }
 
@@ -733,25 +1051,6 @@ impl BrokerManager {
             }
         }
 
-        Ok(())
-    }
-
-    /// Send PINGRESP to client directly via endpoint
-    async fn send_pingresp_to_client(
-        client_id: &str,
-        mqtt_version: &str,
-        endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
-    ) -> anyhow::Result<()> {
-        if mqtt_version == "v5.0" {
-            let pingresp = mqtt_ep::packet::v5_0::Pingresp::builder().build().unwrap();
-            endpoint.send(pingresp).await?;
-        } else {
-            let pingresp = mqtt_ep::packet::v3_1_1::Pingresp::builder()
-                .build()
-                .unwrap();
-            endpoint.send(pingresp).await?;
-        }
-        trace!("PINGRESP sent to client {client_id}");
         Ok(())
     }
 }

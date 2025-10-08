@@ -22,13 +22,17 @@
 
 use mqtt_endpoint_tokio::mqtt_ep;
 use std::process::{Child, Command};
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
 use tokio::net::TcpStream;
 
 pub const BROKER_PORT: u16 = 1883;
 
+static PORT_COUNTER: AtomicU16 = AtomicU16::new(10000);
+
 pub struct BrokerProcess {
     child: Child,
+    port: u16,
 }
 
 impl BrokerProcess {
@@ -42,19 +46,26 @@ impl BrokerProcess {
             );
         }
 
+        // Allocate unique port for this broker instance
+        let port = PORT_COUNTER.fetch_add(1, Ordering::SeqCst);
+
         // Run the built binary directly
         let child = Command::new(broker_path)
-            .args(["--tcp-port", &BROKER_PORT.to_string()])
+            .args(["--tcp-port", &port.to_string()])
             .spawn()
             .expect("Failed to start broker");
 
-        BrokerProcess { child }
+        BrokerProcess { child, port }
     }
 
-    pub async fn wait_ready() {
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub async fn wait_ready(&self) {
         // Wait for broker to start (max 30 seconds)
         for _ in 0..60 {
-            if let Ok(stream) = TcpStream::connect(format!("127.0.0.1:{BROKER_PORT}")).await {
+            if let Ok(stream) = TcpStream::connect(format!("127.0.0.1:{}", self.port)).await {
                 drop(stream);
                 // Wait a bit after connection check
                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -75,10 +86,11 @@ impl Drop for BrokerProcess {
 
 pub async fn create_connected_endpoint(
     client_id: &str,
+    port: u16,
 ) -> mqtt_ep::Endpoint<mqtt_ep::role::Client> {
     // Connect via TCP
     let stream = mqtt_ep::transport::connect_helper::connect_tcp(
-        &format!("127.0.0.1:{BROKER_PORT}"),
+        &format!("127.0.0.1:{port}"),
         Some(tokio::time::Duration::from_secs(10)),
     )
     .await

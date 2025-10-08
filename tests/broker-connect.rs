@@ -22,19 +22,19 @@
 
 mod common;
 
-use common::{BROKER_PORT, BrokerProcess};
+use common::BrokerProcess;
 use mqtt_endpoint_tokio::mqtt_ep;
 
 #[tokio::test]
 async fn test_connect_connack_disconnect() {
-    let _broker = BrokerProcess::start();
+    let broker = BrokerProcess::start();
 
     // Wait for broker to be ready
-    BrokerProcess::wait_ready().await;
+    broker.wait_ready().await;
 
     // Connect via TCP
     let stream = mqtt_ep::transport::connect_helper::connect_tcp(
-        &format!("127.0.0.1:{BROKER_PORT}"),
+        &format!("127.0.0.1:{}", broker.port()),
         Some(tokio::time::Duration::from_secs(10)),
     )
     .await
