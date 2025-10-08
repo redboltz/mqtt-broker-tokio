@@ -71,7 +71,8 @@ impl BrokerManager {
             .collect();
 
         // Send SUBACK using the unified function
-        Self::send_suback(endpoint, packet_id, return_codes, props.clone()).await?;
+        // Note: SUBACK should not include SubscriptionIdentifier property from SUBSCRIBE
+        Self::send_suback(endpoint, packet_id, return_codes, Vec::new()).await?;
 
         // Send retained messages based on Retain Handling (RH)
         for ((topic_filter, sub_qos, rh, _rap, is_shared), (_rc, is_new)) in
