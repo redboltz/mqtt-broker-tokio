@@ -977,3 +977,323 @@ async fn test_retained_rh_send_on_new_subscription_v5_0() {
         }
     }
 }
+
+#[tokio::test]
+async fn test_rap_false_v5_0() {
+    let broker = BrokerProcess::start();
+    broker.wait_ready().await;
+
+    // Create subscriber with RAP=false (default)
+    let subscriber = create_connected_endpoint("subscriber", broker.port()).await;
+
+    let packet_id = subscriber
+        .acquire_packet_id()
+        .await
+        .expect("Failed to acquire packet_id");
+    let sub_opts = mqtt_ep::packet::SubOpts::new()
+        .set_qos(mqtt_ep::packet::Qos::AtMostOnce)
+        .set_rap(false); // RAP=false: retain flag should be cleared when forwarding
+    let sub_entry = mqtt_ep::packet::SubEntry::new("test/rap", sub_opts)
+        .expect("Failed to create SubEntry");
+    let subscribe = mqtt_ep::packet::v5_0::Subscribe::builder()
+        .packet_id(packet_id)
+        .entries(vec![sub_entry])
+        .build()
+        .expect("Failed to build SUBSCRIBE");
+
+    subscriber
+        .send(subscribe)
+        .await
+        .expect("Failed to send SUBSCRIBE");
+
+    // Receive SUBACK
+    let packet = subscriber.recv().await.expect("Failed to receive SUBACK");
+    match packet {
+        mqtt_ep::packet::Packet::V5_0Suback(_) => {}
+        _ => panic!("Expected SUBACK, got {packet:?}"),
+    }
+
+    // Create publisher and publish with retain=true
+    let publisher = create_connected_endpoint("publisher", broker.port()).await;
+
+    let publish = mqtt_ep::packet::v5_0::Publish::builder()
+        .topic_name("test/rap")
+        .expect("Failed to set topic_name")
+        .qos(mqtt_ep::packet::Qos::AtMostOnce)
+        .retain(true) // Original retain flag is true
+        .payload("rap false test")
+        .build()
+        .expect("Failed to build PUBLISH");
+
+    publisher
+        .send(publish)
+        .await
+        .expect("Failed to send PUBLISH");
+
+    // Subscriber should receive message with retain=false (because RAP=false)
+    let packet = subscriber
+        .recv()
+        .await
+        .expect("Failed to receive PUBLISH");
+    match packet {
+        mqtt_ep::packet::Packet::V5_0Publish(publish) => {
+            assert_eq!(publish.topic_name(), "test/rap");
+            assert_eq!(publish.retain(), false); // retain should be false due to RAP=false
+            assert_eq!(publish.payload().as_slice(), b"rap false test");
+        }
+        _ => panic!("Expected PUBLISH, got {packet:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_rap_true_v5_0() {
+    let broker = BrokerProcess::start();
+    broker.wait_ready().await;
+
+    // Create subscriber with RAP=true
+    let subscriber = create_connected_endpoint("subscriber", broker.port()).await;
+
+    let packet_id = subscriber
+        .acquire_packet_id()
+        .await
+        .expect("Failed to acquire packet_id");
+    let sub_opts = mqtt_ep::packet::SubOpts::new()
+        .set_qos(mqtt_ep::packet::Qos::AtMostOnce)
+        .set_rap(true); // RAP=true: retain flag should be preserved when forwarding
+    let sub_entry = mqtt_ep::packet::SubEntry::new("test/rap/true", sub_opts)
+        .expect("Failed to create SubEntry");
+    let subscribe = mqtt_ep::packet::v5_0::Subscribe::builder()
+        .packet_id(packet_id)
+        .entries(vec![sub_entry])
+        .build()
+        .expect("Failed to build SUBSCRIBE");
+
+    subscriber
+        .send(subscribe)
+        .await
+        .expect("Failed to send SUBSCRIBE");
+
+    // Receive SUBACK
+    let packet = subscriber.recv().await.expect("Failed to receive SUBACK");
+    match packet {
+        mqtt_ep::packet::Packet::V5_0Suback(_) => {}
+        _ => panic!("Expected SUBACK, got {packet:?}"),
+    }
+
+    // Create publisher and publish with retain=true
+    let publisher = create_connected_endpoint("publisher", broker.port()).await;
+
+    let publish = mqtt_ep::packet::v5_0::Publish::builder()
+        .topic_name("test/rap/true")
+        .expect("Failed to set topic_name")
+        .qos(mqtt_ep::packet::Qos::AtMostOnce)
+        .retain(true) // Original retain flag is true
+        .payload("rap true test")
+        .build()
+        .expect("Failed to build PUBLISH");
+
+    publisher
+        .send(publish)
+        .await
+        .expect("Failed to send PUBLISH");
+
+    // Subscriber should receive message with retain=true (because RAP=true)
+    let packet = subscriber
+        .recv()
+        .await
+        .expect("Failed to receive PUBLISH");
+    match packet {
+        mqtt_ep::packet::Packet::V5_0Publish(publish) => {
+            assert_eq!(publish.topic_name(), "test/rap/true");
+            assert_eq!(publish.retain(), true); // retain should be true due to RAP=true
+            assert_eq!(publish.payload().as_slice(), b"rap true test");
+        }
+        _ => panic!("Expected PUBLISH, got {packet:?}"),
+    }
+}
+/// Test: Single wildcard subscription matching multiple retained messages
+#[tokio::test]
+async fn test_retained_wildcard_single_entry_v5_0() {
+    let broker = BrokerProcess::start();
+    broker.wait_ready().await;
+
+    // Create publisher and publish multiple retained messages
+    let publisher = create_connected_endpoint("publisher", broker.port()).await;
+
+    // Publish 3 retained messages on different topics
+    for (i, topic) in ["sensor/temp", "sensor/humidity", "sensor/pressure"]
+        .iter()
+        .enumerate()
+    {
+        let publish = mqtt_ep::packet::v5_0::Publish::builder()
+            .topic_name(topic)
+            .expect("Failed to set topic_name")
+            .qos(mqtt_ep::packet::Qos::AtMostOnce)
+            .retain(true)
+            .payload(format!("value{i}"))
+            .build()
+            .expect("Failed to build PUBLISH");
+
+        publisher
+            .send(publish)
+            .await
+            .expect("Failed to send PUBLISH");
+    }
+
+    // Small delay to ensure messages are stored
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Create subscriber with wildcard subscription
+    let subscriber = create_connected_endpoint("subscriber", broker.port()).await;
+
+    let packet_id = subscriber
+        .acquire_packet_id()
+        .await
+        .expect("Failed to acquire packet_id");
+    let sub_opts = mqtt_ep::packet::SubOpts::new()
+        .set_qos(mqtt_ep::packet::Qos::AtMostOnce)
+        .set_rap(false);
+    let sub_entry = mqtt_ep::packet::SubEntry::new("sensor/#", sub_opts)
+        .expect("Failed to create SubEntry");
+    let subscribe = mqtt_ep::packet::v5_0::Subscribe::builder()
+        .packet_id(packet_id)
+        .entries(vec![sub_entry])
+        .build()
+        .expect("Failed to build SUBSCRIBE");
+
+    subscriber
+        .send(subscribe)
+        .await
+        .expect("Failed to send SUBSCRIBE");
+
+    // Receive SUBACK
+    let packet = subscriber.recv().await.expect("Failed to receive SUBACK");
+    match packet {
+        mqtt_ep::packet::Packet::V5_0Suback(_) => {}
+        _ => panic!("Expected SUBACK, got {packet:?}"),
+    }
+
+    // Subscriber should receive all 3 retained messages
+    let mut received_topics = std::collections::HashSet::new();
+    for _ in 0..3 {
+        let packet = subscriber
+            .recv()
+            .await
+            .expect("Failed to receive PUBLISH");
+        match packet {
+            mqtt_ep::packet::Packet::V5_0Publish(publish) => {
+                assert_eq!(publish.retain(), true);
+                received_topics.insert(publish.topic_name().to_string());
+            }
+            _ => panic!("Expected PUBLISH, got {packet:?}"),
+        }
+    }
+
+    assert_eq!(received_topics.len(), 3);
+    assert!(received_topics.contains("sensor/temp"));
+    assert!(received_topics.contains("sensor/humidity"));
+    assert!(received_topics.contains("sensor/pressure"));
+}
+
+/// Test: Multiple wildcard subscriptions matching different retained messages
+#[tokio::test]
+async fn test_retained_wildcard_multiple_entries_v5_0() {
+    let broker = BrokerProcess::start();
+    broker.wait_ready().await;
+
+    // Create publisher and publish multiple retained messages on different topic hierarchies
+    let publisher = create_connected_endpoint("publisher", broker.port()).await;
+
+    // Publish retained messages on various topics
+    let topics = [
+        "home/living/temp",
+        "home/living/humidity",
+        "home/bedroom/temp",
+        "office/desk/light",
+        "office/desk/power",
+    ];
+
+    for (i, topic) in topics.iter().enumerate() {
+        let publish = mqtt_ep::packet::v5_0::Publish::builder()
+            .topic_name(topic)
+            .expect("Failed to set topic_name")
+            .qos(mqtt_ep::packet::Qos::AtMostOnce)
+            .retain(true)
+            .payload(format!("data{i}"))
+            .build()
+            .expect("Failed to build PUBLISH");
+
+        publisher
+            .send(publish)
+            .await
+            .expect("Failed to send PUBLISH");
+    }
+
+    // Small delay to ensure messages are stored
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Create subscriber with multiple wildcard subscriptions
+    let subscriber = create_connected_endpoint("subscriber", broker.port()).await;
+
+    let packet_id = subscriber
+        .acquire_packet_id()
+        .await
+        .expect("Failed to acquire packet_id");
+    let sub_opts = mqtt_ep::packet::SubOpts::new()
+        .set_qos(mqtt_ep::packet::Qos::AtMostOnce)
+        .set_rap(false);
+    
+    // Subscribe to two different wildcard patterns in one SUBSCRIBE packet
+    let entries = vec![
+        mqtt_ep::packet::SubEntry::new("home/#", sub_opts).expect("Failed to create SubEntry"),
+        mqtt_ep::packet::SubEntry::new("office/desk/+", sub_opts).expect("Failed to create SubEntry"),
+    ];
+    
+    let subscribe = mqtt_ep::packet::v5_0::Subscribe::builder()
+        .packet_id(packet_id)
+        .entries(entries)
+        .build()
+        .expect("Failed to build SUBSCRIBE");
+
+    subscriber
+        .send(subscribe)
+        .await
+        .expect("Failed to send SUBSCRIBE");
+
+    // Receive SUBACK
+    let packet = subscriber.recv().await.expect("Failed to receive SUBACK");
+    match packet {
+        mqtt_ep::packet::Packet::V5_0Suback(suback) => {
+            assert_eq!(suback.reason_codes().len(), 2); // 2 subscription entries
+        }
+        _ => panic!("Expected SUBACK, got {packet:?}"),
+    }
+
+    // Subscriber should receive all matching retained messages:
+    // - home/# matches: home/living/temp, home/living/humidity, home/bedroom/temp (3 messages)
+    // - office/desk/+ matches: office/desk/light, office/desk/power (2 messages)
+    // Total: 5 messages
+    let mut received_topics = std::collections::HashSet::new();
+    for _ in 0..5 {
+        let packet = subscriber
+            .recv()
+            .await
+            .expect("Failed to receive PUBLISH");
+        match packet {
+            mqtt_ep::packet::Packet::V5_0Publish(publish) => {
+                assert_eq!(publish.retain(), true);
+                received_topics.insert(publish.topic_name().to_string());
+            }
+            _ => panic!("Expected PUBLISH, got {packet:?}"),
+        }
+    }
+
+    assert_eq!(received_topics.len(), 5);
+    // Check home/# matches
+    assert!(received_topics.contains("home/living/temp"));
+    assert!(received_topics.contains("home/living/humidity"));
+    assert!(received_topics.contains("home/bedroom/temp"));
+    // Check office/desk/+ matches
+    assert!(received_topics.contains("office/desk/light"));
+    assert!(received_topics.contains("office/desk/power"));
+}
