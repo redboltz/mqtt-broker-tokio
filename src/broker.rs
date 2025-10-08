@@ -388,10 +388,28 @@ impl BrokerManager {
                 .await?;
             }
             mqtt_ep::packet::Packet::V3_1_1Publish(pub_packet) => {
-                Self::handle_publish_in_endpoint_v311(pub_packet, subscription_store).await?;
+                Self::handle_publish(
+                    pub_packet.topic_name(),
+                    pub_packet.qos(),
+                    pub_packet.retain(),
+                    pub_packet.dup(),
+                    pub_packet.payload().clone(),
+                    Vec::new(),
+                    subscription_store,
+                )
+                .await?;
             }
             mqtt_ep::packet::Packet::V5_0Publish(pub_packet) => {
-                Self::handle_publish_in_endpoint_v5(pub_packet, subscription_store).await?;
+                Self::handle_publish(
+                    pub_packet.topic_name(),
+                    pub_packet.qos(),
+                    pub_packet.retain(),
+                    pub_packet.dup(),
+                    pub_packet.payload().clone(),
+                    pub_packet.props().to_vec(),
+                    subscription_store,
+                )
+                .await?;
             }
             mqtt_ep::packet::Packet::V3_1_1Pingreq(_) | mqtt_ep::packet::Packet::V5_0Pingreq(_) => {
                 Self::send_pingresp_to_client(client_id, mqtt_version, endpoint).await?;
@@ -593,115 +611,124 @@ impl BrokerManager {
         Ok(())
     }
 
-    /// Handle PUBLISH packet for MQTT v3.1.1 in endpoint task
-    async fn handle_publish_in_endpoint_v311(
-        publish: &mqtt_ep::packet::v3_1_1::Publish,
-        subscription_store: &Arc<SubscriptionStore>,
+    /// Send PUBLISH packet to endpoint (supports both v3.1.1 and v5.0)
+    async fn send_publish(
+        endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
+        topic: &str,
+        qos: mqtt_ep::packet::Qos,
+        retain: bool,
+        dup: bool,
+        payload: impl IntoPayload,
+        props: Vec<mqtt_ep::packet::Property>,
     ) -> anyhow::Result<()> {
-        let topic = publish.topic_name();
-        let payload = publish.payload();
-        let qos = publish.qos();
-        let retain = publish.retain();
+        // Determine MQTT version from endpoint
+        let endpoint_version = endpoint
+            .get_protocol_version()
+            .await
+            .unwrap_or(mqtt_ep::Version::V5_0);
 
-        let subscriptions = subscription_store.find_subscribers(&topic).await;
+        match endpoint_version {
+            mqtt_ep::Version::V3_1_1 => {
+                // Create v3.1.1 PUBLISH packet
+                let mut builder = mqtt_ep::packet::v3_1_1::Publish::builder()
+                    .topic_name(topic)
+                    .unwrap()
+                    .qos(qos)
+                    .retain(retain)
+                    .dup(dup)
+                    .payload(payload);
 
-        if subscriptions.is_empty() {
-            trace!("No subscribers found for topic '{topic}'");
-            return Ok(());
-        }
+                let publish_packet = if qos != mqtt_ep::packet::Qos::AtMostOnce {
+                    // Acquire proper packet ID for QoS > 0
+                    let packet_id = endpoint.acquire_packet_id().await.unwrap();
+                    builder = builder.packet_id(packet_id);
+                    builder.build().unwrap()
+                } else {
+                    builder.build().unwrap()
+                };
 
-        // trace!("Found {} subscriptions for topic '{}'", subscriptions.len(), topic);
+                endpoint.send(publish_packet).await?;
+            }
+            mqtt_ep::Version::V5_0 => {
+                // Create v5.0 PUBLISH packet
+                let mut builder = mqtt_ep::packet::v5_0::Publish::builder()
+                    .topic_name(topic)
+                    .unwrap()
+                    .qos(qos)
+                    .retain(retain)
+                    .dup(dup)
+                    .payload(payload);
 
-        // Send to subscribers sequentially (each endpoint.send() queues via mpsc)
-        for subscription in subscriptions {
-            // QoS arbitration: use the lower of publish QoS and subscription QoS
-            let effective_qos = qos.min(subscription.qos);
+                // Add properties if present
+                if !props.is_empty() {
+                    builder = builder.props(props);
+                }
 
-            // Create PUBLISH packet for this subscriber
-            let mut builder = mqtt_ep::packet::v3_1_1::Publish::builder()
-                .topic_name(topic)
-                .unwrap()
-                .qos(effective_qos)
-                .retain(retain)
-                .payload(payload.clone());
+                let publish_packet = if qos != mqtt_ep::packet::Qos::AtMostOnce {
+                    // Acquire proper packet ID for QoS > 0
+                    let packet_id = endpoint.acquire_packet_id().await.unwrap_or(1);
+                    builder = builder.packet_id(packet_id);
+                    builder.build().unwrap()
+                } else {
+                    builder.build().unwrap()
+                };
 
-            let publish_packet = if effective_qos != mqtt_ep::packet::Qos::AtMostOnce {
-                // Acquire proper packet ID for QoS > 0
-                let packet_id = subscription
-                    .endpoint
-                    .endpoint()
-                    .acquire_packet_id()
-                    .await
-                    .unwrap();
-                builder = builder.packet_id(packet_id);
-                builder.build().unwrap()
-            } else {
-                builder.build().unwrap()
-            };
-
-            // Send immediately (queues in mpsc channel, maintains order)
-            if let Err(e) = subscription.endpoint.endpoint().send(publish_packet).await {
-                error!("Failed to send PUBLISH message to endpoint: {e}");
+                endpoint.send(publish_packet).await?;
+            }
+            _ => {
+                return Err(anyhow::anyhow!("Unsupported MQTT version"));
             }
         }
 
         Ok(())
     }
 
-    /// Handle PUBLISH packet for MQTT v5.0 in endpoint task
-    async fn handle_publish_in_endpoint_v5(
-        publish: &mqtt_ep::packet::v5_0::Publish,
+    /// Handle PUBLISH packet (unified for both v3.1.1 and v5.0)
+    async fn handle_publish(
+        topic: &str,
+        qos: mqtt_ep::packet::Qos,
+        retain: bool,
+        _dup: bool,
+        payload: impl IntoPayload,
+        publisher_props: Vec<mqtt_ep::packet::Property>,
         subscription_store: &Arc<SubscriptionStore>,
     ) -> anyhow::Result<()> {
-        let topic = publish.topic_name();
-        let payload = publish.payload();
-        let qos = publish.qos();
-        let retain = publish.retain();
-
-        let subscriptions = subscription_store.find_subscribers(&topic).await;
+        let subscriptions = subscription_store.find_subscribers(topic).await;
 
         if subscriptions.is_empty() {
             trace!("No subscribers found for topic '{topic}'");
             return Ok(());
         }
 
-        // trace!("Found {} subscriptions for topic '{}'", subscriptions.len(), topic);
+        // Convert to ArcPayload for efficient cloning (reference counting)
+        let arc_payload = payload.into_payload();
 
         // Send to subscribers sequentially (each endpoint.send() queues via mpsc)
         for subscription in subscriptions {
             // QoS arbitration: use the lower of publish QoS and subscription QoS
             let effective_qos = qos.min(subscription.qos);
 
-            // Create PUBLISH packet for this subscriber (v5.0 format with SubscriptionIdentifier)
-            let mut builder = mqtt_ep::packet::v5_0::Publish::builder()
-                .topic_name(topic)
-                .unwrap()
-                .qos(effective_qos)
-                .retain(retain)
-                .payload(payload.clone());
-
-            // Add SubscriptionIdentifier property if present
+            // Prepare properties for v5.0
+            let mut props = publisher_props.clone();
             if let Some(sub_id) = subscription.sub_id {
-                builder = builder.props(vec![mqtt_ep::packet::Property::SubscriptionIdentifier(
+                props.push(mqtt_ep::packet::Property::SubscriptionIdentifier(
                     mqtt_ep::packet::SubscriptionIdentifier::new(sub_id).unwrap(),
-                )]);
+                ));
             }
 
-            let publish_packet = if effective_qos != mqtt_ep::packet::Qos::AtMostOnce {
-                // Acquire proper packet ID for QoS > 0
-                let packet_id = subscription
-                    .endpoint
-                    .endpoint()
-                    .acquire_packet_id()
-                    .await
-                    .unwrap_or(1);
-                builder = builder.packet_id(packet_id);
-                builder.build().unwrap()
-            } else {
-                builder.build().unwrap()
-            };
-
-            if let Err(e) = subscription.endpoint.endpoint().send(publish_packet).await {
+            // Send PUBLISH packet using the new function
+            // Clone is just Arc reference counting, very cheap
+            if let Err(e) = Self::send_publish(
+                subscription.endpoint.endpoint(),
+                topic,
+                effective_qos,
+                retain,
+                false, // dup is false for new messages
+                arc_payload.clone(),
+                props,
+            )
+            .await
+            {
                 error!("Failed to send PUBLISH message to endpoint: {e}");
             }
         }
