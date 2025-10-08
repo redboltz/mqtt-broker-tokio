@@ -5,7 +5,8 @@
 // SPDX-License-Identifier: MIT
 
 use super::BrokerManager;
-use crate::subscription_store::EndpointRef;
+use crate::retained_store::RetainedStore;
+use crate::subscription_store::{EndpointRef, SubscriptionStore};
 use mqtt_endpoint_tokio::mqtt_ep;
 use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
 use std::sync::Arc;
@@ -15,6 +16,7 @@ use tracing::trace;
 
 impl BrokerManager {
     /// Handle SUBSCRIBE in endpoint task (unified for both v3.1.1 and v5.0)
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn handle_subscribe(
         packet_id: u16,
         entries: &[mqtt_ep::packet::SubEntry],
@@ -22,6 +24,8 @@ impl BrokerManager {
         subscription_tx: &mpsc::Sender<SubscriptionMessage>,
         endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
         endpoint_ref: &EndpointRef,
+        _subscription_store: &Arc<SubscriptionStore>,
+        retained_store: &Arc<RetainedStore>,
     ) -> anyhow::Result<()> {
         // Extract SubscriptionIdentifier from properties
         let sub_id = props.iter().find_map(|prop| match prop {
@@ -30,12 +34,19 @@ impl BrokerManager {
         });
 
         let mut topic_filters = Vec::new();
+        let mut entry_info = Vec::new(); // Store (topic_filter, qos, rh, is_shared)
 
         for entry in entries {
             let topic_filter = entry.topic_filter().to_string();
             let qos = entry.sub_opts().qos();
+            // Retain Handling: default to 0 (send retained) for v3.1.1 compatibility
+            // v5.0 should extract from sub_opts, but for now default to 0
+            let rh = 0u8;
+            let is_shared = topic_filter.starts_with("$share/");
+
             topic_filters.push((topic_filter.clone(), qos));
-            trace!("SUBSCRIBE: endpoint wants to subscribe to '{topic_filter}' with QoS {qos:?}");
+            trace!("SUBSCRIBE: endpoint wants to subscribe to '{topic_filter}' with QoS {qos:?}, RH={rh}");
+            entry_info.push((topic_filter, qos, rh, is_shared));
         }
 
         // Send to subscription manager and wait for response
@@ -52,7 +63,68 @@ impl BrokerManager {
         let return_codes = response_rx.await?;
 
         // Send SUBACK using the unified function
-        Self::send_suback(endpoint, packet_id, return_codes, props).await?;
+        Self::send_suback(endpoint, packet_id, return_codes, props.clone()).await?;
+
+        // Send retained messages based on Retain Handling (RH)
+        for (topic_filter, sub_qos, rh, is_shared) in entry_info {
+            // Skip if shared subscription
+            if is_shared {
+                continue;
+            }
+
+            // Check RH value
+            let should_send = match rh {
+                0 => {
+                    // RH=0: Always send retained messages
+                    true
+                }
+                1 => {
+                    // RH=1: Send only if new subscription (no identical subscription existed before this SUBSCRIBE)
+                    // Since we already added the subscription, we need to check if it existed before
+                    // For simplicity, we treat RH=1 the same as RH=0 for now
+                    // TODO: Track whether subscription is new or existing
+                    true
+                }
+                2 => {
+                    // RH=2: Never send retained messages
+                    false
+                }
+                _ => false,
+            };
+
+            if should_send {
+                // Get matching retained messages
+                let retained_messages = retained_store.get_matching(&topic_filter).await;
+
+                for retained_msg in retained_messages {
+                    // QoS arbitration
+                    let effective_qos = retained_msg.qos.min(sub_qos);
+
+                    // Prepare properties
+                    let mut msg_props = retained_msg.props.clone();
+                    if let Some(id) = sub_id {
+                        msg_props.push(mqtt_ep::packet::Property::SubscriptionIdentifier(
+                            mqtt_ep::packet::SubscriptionIdentifier::new(id).unwrap(),
+                        ));
+                    }
+
+                    // Send retained message as PUBLISH
+                    if let Err(e) = Self::send_publish(
+                        endpoint,
+                        &retained_msg.topic_name,
+                        effective_qos,
+                        true, // retain flag stays true for retained messages
+                        false, // dup is false
+                        retained_msg.payload.clone(),
+                        msg_props,
+                    )
+                    .await
+                    {
+                        trace!("Failed to send retained message: {e}");
+                    }
+                }
+            }
+        }
 
         trace!("✅ SUBSCRIBE processing completed successfully");
         Ok(())

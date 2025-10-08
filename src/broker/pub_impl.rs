@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: MIT
 
 use super::BrokerManager;
+use crate::retained_store::RetainedStore;
 use crate::subscription_store::SubscriptionStore;
 use mqtt_endpoint_tokio::mqtt_ep;
 use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
@@ -258,7 +259,26 @@ impl BrokerManager {
         payload: impl IntoPayload,
         publisher_props: Vec<mqtt_ep::packet::Property>,
         subscription_store: &Arc<SubscriptionStore>,
+        retained_store: &Arc<RetainedStore>,
     ) -> anyhow::Result<()> {
+        // Convert to ArcPayload early for retained message storage
+        let arc_payload = payload.into_payload();
+
+        // Handle retained message
+        if retain {
+            if arc_payload.is_empty() {
+                // Empty payload with retain flag: remove retained message
+                retained_store.remove(topic).await;
+                trace!("Removed retained message for topic '{topic}'");
+            } else {
+                // Non-empty payload with retain flag: store/update retained message
+                retained_store
+                    .store(topic, qos, arc_payload.clone(), publisher_props.clone())
+                    .await;
+                trace!("Stored retained message for topic '{topic}' with QoS {qos:?}");
+            }
+        }
+
         let subscriptions = subscription_store.find_subscribers(topic).await;
         let has_subscribers = !subscriptions.is_empty();
 
@@ -314,9 +334,6 @@ impl BrokerManager {
         if !has_subscribers {
             return Ok(());
         }
-
-        // Convert to ArcPayload for efficient cloning (reference counting)
-        let arc_payload = payload.into_payload();
 
         // Send to subscribers sequentially (each endpoint.send() queues via mpsc)
         for subscription in subscriptions {

@@ -26,6 +26,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info, trace};
 use uuid::Uuid;
 
+use crate::retained_store::RetainedStore;
 use crate::subscription_store::{EndpointRef, SubscriptionStore};
 
 mod sub_impl;
@@ -56,6 +57,9 @@ pub struct BrokerManager {
     /// Global subscription store (shared for publish processing)
     subscription_store: Arc<SubscriptionStore>,
 
+    /// Global retained message store
+    retained_store: Arc<RetainedStore>,
+
     /// Channel to send subscription management messages
     subscription_tx: mpsc::Sender<SubscriptionMessage>,
 
@@ -67,6 +71,7 @@ impl BrokerManager {
     /// Create a new broker manager
     pub async fn new(ep_recv_buf_size: Option<usize>) -> anyhow::Result<Self> {
         let subscription_store = Arc::new(SubscriptionStore::new());
+        let retained_store = Arc::new(RetainedStore::new());
         let (subscription_tx, subscription_rx) = mpsc::channel(1000);
 
         // Spawn subscription management task
@@ -77,6 +82,7 @@ impl BrokerManager {
 
         Ok(Self {
             subscription_store,
+            retained_store,
             subscription_tx,
             ep_recv_buf_size,
         })
@@ -122,6 +128,7 @@ impl BrokerManager {
 
         // Spawn dedicated endpoint task for this client
         let subscription_store_for_endpoint = self.subscription_store.clone();
+        let retained_store_for_endpoint = self.retained_store.clone();
         let subscription_tx_for_endpoint = self.subscription_tx.clone();
         let broker_manager_for_cleanup = self.clone();
 
@@ -130,6 +137,7 @@ impl BrokerManager {
             let endpoint_ref = Self::handle_client_endpoint(
                 endpoint,
                 subscription_store_for_endpoint,
+                retained_store_for_endpoint,
                 subscription_tx_for_endpoint,
             )
             .await;
@@ -242,6 +250,7 @@ impl BrokerManager {
     async fn handle_client_endpoint(
         endpoint: mqtt_ep::Endpoint<mqtt_ep::role::Server>,
         subscription_store: Arc<SubscriptionStore>,
+        retained_store: Arc<RetainedStore>,
         subscription_tx: mpsc::Sender<SubscriptionMessage>,
     ) -> Option<EndpointRef> {
         trace!("Starting endpoint task (waiting for CONNECT)");
@@ -330,6 +339,7 @@ impl BrokerManager {
                         &client_id,
                         &packet,
                         &subscription_store,
+                        &retained_store,
                         &subscription_tx,
                         &endpoint_arc,
                         &endpoint_ref,
@@ -356,6 +366,7 @@ impl BrokerManager {
         client_id: &str,
         packet: &mqtt_ep::packet::Packet,
         subscription_store: &Arc<SubscriptionStore>,
+        retained_store: &Arc<RetainedStore>,
         subscription_tx: &mpsc::Sender<SubscriptionMessage>,
         endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
         endpoint_ref: &EndpointRef,
@@ -369,6 +380,8 @@ impl BrokerManager {
                     subscription_tx,
                     endpoint,
                     endpoint_ref,
+                    subscription_store,
+                    retained_store,
                 )
                 .await?;
             }
@@ -380,6 +393,8 @@ impl BrokerManager {
                     subscription_tx,
                     endpoint,
                     endpoint_ref,
+                    subscription_store,
+                    retained_store,
                 )
                 .await?;
             }
@@ -414,6 +429,7 @@ impl BrokerManager {
                     pub_packet.payload().clone(),
                     Vec::new(),
                     subscription_store,
+                    retained_store,
                 )
                 .await?;
             }
@@ -428,6 +444,7 @@ impl BrokerManager {
                     pub_packet.payload().clone(),
                     pub_packet.props().to_vec(),
                     subscription_store,
+                    retained_store,
                 )
                 .await?;
             }
