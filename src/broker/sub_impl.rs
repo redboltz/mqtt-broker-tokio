@@ -38,14 +38,14 @@ impl BrokerManager {
 
         for entry in entries {
             let topic_filter = entry.topic_filter().to_string();
-            let qos = entry.sub_opts().qos();
-            // Retain Handling: default to 0 (send retained) for v3.1.1 compatibility
-            // v5.0 should extract from sub_opts, but for now default to 0
-            let rh = 0u8;
+            let sub_opts = entry.sub_opts();
+            let qos = sub_opts.qos();
+            // Get Retain Handling from sub_opts
+            let rh = sub_opts.rh();
             let is_shared = topic_filter.starts_with("$share/");
 
             topic_filters.push((topic_filter.clone(), qos));
-            trace!("SUBSCRIBE: endpoint wants to subscribe to '{topic_filter}' with QoS {qos:?}, RH={rh}");
+            trace!("SUBSCRIBE: endpoint wants to subscribe to '{topic_filter}' with QoS {qos:?}, RH={rh:?}");
             entry_info.push((topic_filter, qos, rh, is_shared));
         }
 
@@ -73,20 +73,21 @@ impl BrokerManager {
             }
 
             // Check RH value
-            let should_send = match rh {
+            let rh_value = rh as u8;
+            let should_send = match rh_value {
                 0 => {
-                    // RH=0: Always send retained messages
+                    // RH=0 (SendRetained): Always send retained messages
                     true
                 }
                 1 => {
-                    // RH=1: Send only if new subscription (no identical subscription existed before this SUBSCRIBE)
+                    // RH=1 (SendRetainedOnNewSubscription): Send only if new subscription
                     // Since we already added the subscription, we need to check if it existed before
                     // For simplicity, we treat RH=1 the same as RH=0 for now
                     // TODO: Track whether subscription is new or existing
                     true
                 }
                 2 => {
-                    // RH=2: Never send retained messages
+                    // RH=2 (DoNotSendRetained): Never send retained messages
                     false
                 }
                 _ => false,
