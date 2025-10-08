@@ -46,7 +46,7 @@ fn create_mock_endpoint() -> EndpointRef {
                 endpoint.clone(),
                 "a/b",
                 mqtt_ep::packet::Qos::AtMostOnce,
-                Some(1),
+                Some(1), false,
             )
             .await
             .unwrap();
@@ -55,7 +55,7 @@ fn create_mock_endpoint() -> EndpointRef {
                 endpoint.clone(),
                 "a/+",
                 mqtt_ep::packet::Qos::AtLeastOnce,
-                Some(2),
+                Some(2), false,
             )
             .await
             .unwrap();
@@ -64,7 +64,7 @@ fn create_mock_endpoint() -> EndpointRef {
                 endpoint.clone(),
                 "a/#",
                 mqtt_ep::packet::Qos::ExactlyOnce,
-                Some(3),
+                Some(3), false,
             )
             .await
             .unwrap();
@@ -114,7 +114,7 @@ fn create_mock_endpoint() -> EndpointRef {
                 endpoint.clone(),
                 "test/topic",
                 mqtt_ep::packet::Qos::AtMostOnce,
-                Some(100),
+                Some(100), false,
             )
             .await
             .unwrap();
@@ -130,7 +130,7 @@ fn create_mock_endpoint() -> EndpointRef {
                 endpoint.clone(),
                 "test/topic",
                 mqtt_ep::packet::Qos::ExactlyOnce,
-                Some(200),
+                Some(200), false,
             )
             .await
             .unwrap();
@@ -152,7 +152,7 @@ fn create_mock_endpoint() -> EndpointRef {
                 endpoint.clone(),
                 "sensor/+/temperature",
                 mqtt_ep::packet::Qos::AtMostOnce,
-                Some(1),
+                Some(1), false,
             )
             .await
             .unwrap();
@@ -161,7 +161,7 @@ fn create_mock_endpoint() -> EndpointRef {
                 endpoint.clone(),
                 "sensor/#",
                 mqtt_ep::packet::Qos::AtLeastOnce,
-                Some(2),
+                Some(2), false,
             )
             .await
             .unwrap();
@@ -170,7 +170,7 @@ fn create_mock_endpoint() -> EndpointRef {
                 endpoint.clone(),
                 "sensor/room1/temperature",
                 mqtt_ep::packet::Qos::ExactlyOnce,
-                Some(3),
+                Some(3), false,
             )
             .await
             .unwrap();
@@ -210,7 +210,7 @@ fn create_mock_endpoint() -> EndpointRef {
                 endpoint.clone(),
                 "a/+/c/+/e",
                 mqtt_ep::packet::Qos::AtMostOnce,
-                Some(1),
+                Some(1), false,
             )
             .await
             .unwrap();
@@ -244,7 +244,7 @@ fn create_mock_endpoint() -> EndpointRef {
                 endpoint.clone(),
                 "a/+/#",
                 mqtt_ep::packet::Qos::AtMostOnce,
-                Some(1),
+                Some(1), false,
             )
             .await
             .unwrap();
@@ -285,7 +285,7 @@ fn create_mock_endpoint() -> EndpointRef {
                 endpoint.clone(),
                 "#",
                 mqtt_ep::packet::Qos::AtMostOnce,
-                Some(1),
+                Some(1), false,
             )
             .await
             .unwrap();
@@ -312,7 +312,7 @@ fn create_mock_endpoint() -> EndpointRef {
                 endpoint.clone(),
                 "a//b",
                 mqtt_ep::packet::Qos::AtMostOnce,
-                Some(1),
+                Some(1), false,
             )
             .await
             .unwrap();
@@ -321,7 +321,7 @@ fn create_mock_endpoint() -> EndpointRef {
                 endpoint.clone(),
                 "a/+/b",
                 mqtt_ep::packet::Qos::AtLeastOnce,
-                Some(2),
+                Some(2), false,
             )
             .await
             .unwrap();
@@ -351,7 +351,7 @@ fn create_mock_endpoint() -> EndpointRef {
                 endpoint1.clone(),
                 "test/topic",
                 mqtt_ep::packet::Qos::AtMostOnce,
-                Some(1),
+                Some(1), false,
             )
             .await
             .unwrap();
@@ -360,7 +360,7 @@ fn create_mock_endpoint() -> EndpointRef {
                 endpoint2.clone(),
                 "test/topic",
                 mqtt_ep::packet::Qos::AtLeastOnce,
-                Some(2),
+                Some(2), false,
             )
             .await
             .unwrap();
@@ -398,7 +398,7 @@ fn create_mock_endpoint() -> EndpointRef {
                 endpoint.clone(),
                 "test/topic",
                 mqtt_ep::packet::Qos::AtMostOnce,
-                None,
+                None, false,
             )
             .await
             .unwrap();

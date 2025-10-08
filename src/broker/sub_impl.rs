@@ -34,7 +34,7 @@ impl BrokerManager {
         });
 
         let mut topic_filters = Vec::new();
-        let mut entry_info = Vec::new(); // Store (topic_filter, qos, rh, is_shared)
+        let mut entry_info = Vec::new(); // Store (topic_filter, qos, rh, rap, is_shared)
 
         for entry in entries {
             let topic_filter = entry.topic_filter().to_string();
@@ -42,11 +42,13 @@ impl BrokerManager {
             let qos = sub_opts.qos();
             // Get Retain Handling from sub_opts
             let rh = sub_opts.rh();
+            // Get Retain As Published from sub_opts
+            let rap = sub_opts.rap();
             let is_shared = topic_filter.starts_with("$share/");
 
-            topic_filters.push((topic_filter.clone(), qos));
-            trace!("SUBSCRIBE: endpoint wants to subscribe to '{topic_filter}' with QoS {qos:?}, RH={rh:?}");
-            entry_info.push((topic_filter, qos, rh, is_shared));
+            topic_filters.push((topic_filter.clone(), qos, rap));
+            trace!("SUBSCRIBE: endpoint wants to subscribe to '{topic_filter}' with QoS {qos:?}, RH={rh:?}, RAP={rap}");
+            entry_info.push((topic_filter, qos, rh, rap, is_shared));
         }
 
         // Send to subscription manager and wait for response
@@ -60,31 +62,36 @@ impl BrokerManager {
             })
             .await?;
 
-        let return_codes = response_rx.await?;
+        let return_codes_with_is_new = response_rx.await?;
+
+        // Extract return codes for SUBACK
+        let return_codes: Vec<_> = return_codes_with_is_new
+            .iter()
+            .map(|(rc, _)| *rc)
+            .collect();
 
         // Send SUBACK using the unified function
         Self::send_suback(endpoint, packet_id, return_codes, props.clone()).await?;
 
         // Send retained messages based on Retain Handling (RH)
-        for (topic_filter, sub_qos, rh, is_shared) in entry_info {
+        for ((topic_filter, sub_qos, rh, _rap, is_shared), (_rc, is_new)) in
+            entry_info.iter().zip(return_codes_with_is_new.iter())
+        {
             // Skip if shared subscription
-            if is_shared {
+            if *is_shared {
                 continue;
             }
 
             // Check RH value
-            let rh_value = rh as u8;
+            let rh_value = *rh as u8;
             let should_send = match rh_value {
                 0 => {
                     // RH=0 (SendRetained): Always send retained messages
                     true
                 }
                 1 => {
-                    // RH=1 (SendRetainedOnNewSubscription): Send only if new subscription
-                    // Since we already added the subscription, we need to check if it existed before
-                    // For simplicity, we treat RH=1 the same as RH=0 for now
-                    // TODO: Track whether subscription is new or existing
-                    true
+                    // RH=1 (SendRetainedIfNotExists): Send only if new subscription
+                    *is_new
                 }
                 2 => {
                     // RH=2 (DoNotSendRetained): Never send retained messages
@@ -95,11 +102,11 @@ impl BrokerManager {
 
             if should_send {
                 // Get matching retained messages
-                let retained_messages = retained_store.get_matching(&topic_filter).await;
+                let retained_messages = retained_store.get_matching(topic_filter).await;
 
                 for retained_msg in retained_messages {
                     // QoS arbitration
-                    let effective_qos = retained_msg.qos.min(sub_qos);
+                    let effective_qos = retained_msg.qos.min(*sub_qos);
 
                     // Prepare properties
                     let mut msg_props = retained_msg.props.clone();

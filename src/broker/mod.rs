@@ -37,9 +37,9 @@ mod pub_impl;
 pub enum SubscriptionMessage {
     Subscribe {
         endpoint: EndpointRef,
-        topics: Vec<(String, mqtt_ep::packet::Qos)>,
+        topics: Vec<(String, mqtt_ep::packet::Qos, bool)>, // (topic_filter, qos, rap)
         sub_id: Option<u32>,
-        response_tx: oneshot::Sender<Vec<mqtt_ep::result_code::SubackReturnCode>>,
+        response_tx: oneshot::Sender<Vec<(mqtt_ep::result_code::SubackReturnCode, bool)>>, // (return_code, is_new)
     },
     Unsubscribe {
         endpoint: EndpointRef,
@@ -190,12 +190,12 @@ impl BrokerManager {
                 } => {
                     let mut return_codes = Vec::new();
 
-                    for (topic_filter, qos) in topics {
+                    for (topic_filter, qos, rap) in topics {
                         match subscription_store
-                            .subscribe(endpoint.clone(), &topic_filter, qos, sub_id)
+                            .subscribe(endpoint.clone(), &topic_filter, qos, sub_id, rap)
                             .await
                         {
-                            Ok(()) => {
+                            Ok(is_new) => {
                                 // Convert QoS to SubAckReturnCode
                                 let return_code = match qos {
                                     mqtt_ep::packet::Qos::AtMostOnce => {
@@ -208,11 +208,11 @@ impl BrokerManager {
                                         mqtt_ep::result_code::SubackReturnCode::SuccessMaximumQos2
                                     }
                                 };
-                                return_codes.push(return_code);
-                                trace!("Registered subscription: endpoint topic='{topic_filter}'");
+                                return_codes.push((return_code, is_new));
+                                trace!("Registered subscription: endpoint topic='{topic_filter}', is_new={is_new}");
                             }
                             Err(_) => {
-                                return_codes.push(mqtt_ep::result_code::SubackReturnCode::Failure);
+                                return_codes.push((mqtt_ep::result_code::SubackReturnCode::Failure, false));
                             }
                         }
                     }

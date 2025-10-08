@@ -340,6 +340,10 @@ impl BrokerManager {
             // QoS arbitration: use the lower of publish QoS and subscription QoS
             let effective_qos = qos.min(subscription.qos);
 
+            // RAP (Retain As Published): if rap is false, always send with retain=false
+            // if rap is true, send with the original retain flag
+            let effective_retain = if subscription.rap { retain } else { false };
+
             // Prepare properties for v5.0
             let mut props = publisher_props.clone();
             if let Some(sub_id) = subscription.sub_id {
@@ -354,7 +358,7 @@ impl BrokerManager {
                 subscription.endpoint.endpoint(),
                 topic,
                 effective_qos,
-                retain,
+                effective_retain,
                 false, // dup is false for new messages
                 arc_payload.clone(),
                 props,

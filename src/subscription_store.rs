@@ -45,13 +45,14 @@ impl std::error::Error for SubscriptionError {}
 
 pub type ClientId = String;
 
-/// Subscription information containing endpoint, QoS, topic filter, and subscription ID
+/// Subscription information containing endpoint, QoS, topic filter, subscription ID, and RAP flag
 #[derive(Debug, Clone)]
 pub struct Subscription {
     pub endpoint: EndpointRef,
     pub qos: mqtt_ep::packet::Qos,
     pub topic_filter: String,
     pub sub_id: Option<u32>,
+    pub rap: bool, // Retain As Published flag
 }
 
 /// Wrapper for Arc<Endpoint> that uses pointer-based comparison and hashing
@@ -112,6 +113,7 @@ struct SubscriptionEntry {
     pub qos: mqtt_ep::packet::Qos,
     pub topic_filter: String,
     pub sub_id: Option<u32>,
+    pub rap: bool,
 }
 
 /// Trie node containing subscription information
@@ -145,35 +147,39 @@ impl SubscriptionStore {
     }
 
     /// Add a subscription for an endpoint to a topic filter
+    /// Returns Ok(is_new) where is_new is true if this is a new subscription, false if updating existing
     pub async fn subscribe(
         &self,
         endpoint: EndpointRef,
         topic_filter: &str,
         qos: mqtt_ep::packet::Qos,
         sub_id: Option<u32>,
-    ) -> Result<(), SubscriptionError> {
+        rap: bool,
+    ) -> Result<bool, SubscriptionError> {
         Self::validate_topic_filter(topic_filter)?;
 
         let mut root = self.root.write().await;
         let segments: Vec<&str> = topic_filter.split('/').collect();
 
-        Self::insert_subscription(
+        let is_new = Self::insert_subscription(
             &mut root,
             &segments,
             endpoint.clone(),
             topic_filter,
             qos,
             sub_id,
+            rap,
             0,
         );
 
         trace!(
-            "Subscribed endpoint to topic filter '{topic_filter}' with QoS {qos:?}, sub_id {sub_id:?}"
+            "Subscribed endpoint to topic filter '{topic_filter}' with QoS {qos:?}, sub_id {sub_id:?}, is_new: {is_new}"
         );
-        Ok(())
+        Ok(is_new)
     }
 
     /// Recursively insert subscription into trie
+    /// Returns true if this is a new subscription, false if updating existing
     fn insert_subscription(
         node: &mut TrieNode,
         segments: &[&str],
@@ -181,18 +187,19 @@ impl SubscriptionStore {
         topic_filter: &str,
         qos: mqtt_ep::packet::Qos,
         sub_id: Option<u32>,
+        rap: bool,
         depth: usize,
-    ) {
+    ) -> bool {
         if depth >= segments.len() {
             // End of path - add to exact subscribers
-            Self::upsert_subscription(
+            return Self::upsert_subscription(
                 &mut node.exact_subscribers,
                 endpoint,
                 topic_filter,
                 qos,
                 sub_id,
+                rap,
             );
-            return;
         }
 
         let segment = segments[depth];
@@ -206,7 +213,8 @@ impl SubscriptionStore {
                     topic_filter,
                     qos,
                     sub_id,
-                );
+                    rap,
+                )
             }
             "+" => {
                 // Single-level wildcard
@@ -222,7 +230,8 @@ impl SubscriptionStore {
                             topic_filter,
                             qos,
                             sub_id,
-                        );
+                            rap,
+                        )
                     } else {
                         Self::insert_subscription(
                             wildcard_child,
@@ -231,9 +240,12 @@ impl SubscriptionStore {
                             topic_filter,
                             qos,
                             sub_id,
+                            rap,
                             depth + 1,
-                        );
+                        )
                     }
+                } else {
+                    false
                 }
             }
             _ => {
@@ -249,28 +261,33 @@ impl SubscriptionStore {
                     topic_filter,
                     qos,
                     sub_id,
+                    rap,
                     depth + 1,
-                );
+                )
             }
         }
     }
 
     /// Insert or update subscription entry (overwrite if identical topic_filter)
+    /// Returns true if this is a new subscription, false if updating existing
     fn upsert_subscription(
         subscribers: &mut Vec<SubscriptionEntry>,
         endpoint: EndpointRef,
         topic_filter: &str,
         qos: mqtt_ep::packet::Qos,
         sub_id: Option<u32>,
-    ) {
+        rap: bool,
+    ) -> bool {
         // Find existing subscription with same endpoint and topic_filter
         if let Some(existing) = subscribers
             .iter_mut()
             .find(|s| s.endpoint == endpoint && s.topic_filter == topic_filter)
         {
-            // Update existing subscription (QoS and sub_id overwrite)
+            // Update existing subscription (QoS, sub_id, and rap overwrite)
             existing.qos = qos;
             existing.sub_id = sub_id;
+            existing.rap = rap;
+            false // Not a new subscription
         } else {
             // Add new subscription
             subscribers.push(SubscriptionEntry {
@@ -278,7 +295,9 @@ impl SubscriptionStore {
                 qos,
                 topic_filter: topic_filter.to_string(),
                 sub_id,
+                rap,
             });
+            true // New subscription
         }
     }
 
@@ -387,6 +406,7 @@ impl SubscriptionStore {
                 qos: entry.qos,
                 topic_filter: entry.topic_filter,
                 sub_id: entry.sub_id,
+                rap: entry.rap,
             })
             .collect();
         // trace!("Final subscriber list for '{}': {} subscriptions", topic, result.len());
