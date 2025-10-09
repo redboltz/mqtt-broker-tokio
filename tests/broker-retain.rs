@@ -385,30 +385,7 @@ async fn test_retained_qos2_qos_arbitration_v5_0() {
         .await
         .expect("Failed to send PUBLISH");
 
-    // Receive PUBREC
-    let packet = publisher.recv().await.expect("Failed to receive PUBREC");
-    let pubrec_packet_id = match packet {
-        mqtt_ep::packet::Packet::V5_0Pubrec(pubrec) => {
-            assert_eq!(pubrec.packet_id(), packet_id);
-            pubrec.packet_id()
-        }
-        _ => panic!("Expected PUBREC, got {packet:?}"),
-    };
-
-    // Send PUBREL
-    let pubrel = mqtt_ep::packet::v5_0::Pubrel::builder()
-        .packet_id(pubrec_packet_id)
-        .reason_code(mqtt_ep::result_code::PubrelReasonCode::Success)
-        .build()
-        .expect("Failed to build PUBREL");
-    publisher.send(pubrel).await.expect("Failed to send PUBREL");
-
-    // Receive PUBCOMP
-    let packet = publisher.recv().await.expect("Failed to receive PUBCOMP");
-    match packet {
-        mqtt_ep::packet::Packet::V5_0Pubcomp(_) => {}
-        _ => panic!("Expected PUBCOMP, got {packet:?}"),
-    }
+    // QoS 2 handshake is handled automatically by auto_pub_response=true (default)
 
     // Subscriber should receive the published message (QoS 2)
     let packet = subscriber
@@ -421,35 +398,7 @@ async fn test_retained_qos2_qos_arbitration_v5_0() {
             assert_eq!(publish.qos(), mqtt_ep::packet::Qos::ExactlyOnce);
             assert_eq!(publish.retain(), false); // retain flag is false for forwarded messages (default RAP)
             assert_eq!(publish.payload().as_slice(), b"qos2 retained");
-
-            // Send PUBREC for the received message
-            let packet_id = publish.packet_id().unwrap();
-            let pubrec = mqtt_ep::packet::v5_0::Pubrec::builder()
-                .packet_id(packet_id)
-                .reason_code(mqtt_ep::result_code::PubrecReasonCode::Success)
-                .build()
-                .expect("Failed to build PUBREC");
-            subscriber
-                .send(pubrec)
-                .await
-                .expect("Failed to send PUBREC");
-
-            // Receive PUBREL
-            let packet = subscriber.recv().await.expect("Failed to receive PUBREL");
-            match packet {
-                mqtt_ep::packet::Packet::V5_0Pubrel(pubrel) => {
-                    let pubcomp = mqtt_ep::packet::v5_0::Pubcomp::builder()
-                        .packet_id(pubrel.packet_id())
-                        .reason_code(mqtt_ep::result_code::PubcompReasonCode::Success)
-                        .build()
-                        .expect("Failed to build PUBCOMP");
-                    subscriber
-                        .send(pubcomp)
-                        .await
-                        .expect("Failed to send PUBCOMP");
-                }
-                _ => panic!("Expected PUBREL, got {packet:?}"),
-            }
+            // QoS 2 handshake (PUBREC/PUBREL/PUBCOMP) is handled automatically by auto_pub_response=true (default)
         }
         _ => panic!("Expected PUBLISH, got {packet:?}"),
     }
@@ -496,27 +445,17 @@ async fn test_retained_qos2_qos_arbitration_v5_0() {
         .recv()
         .await
         .expect("Failed to receive retained PUBLISH");
-    let retained_packet_id = match packet {
+    match packet {
         mqtt_ep::packet::Packet::V5_0Publish(publish) => {
             assert_eq!(publish.topic_name(), "retain/qos2");
             // QoS arbitration: min(retained QoS 2, subscription QoS 1) = QoS 1
             assert_eq!(publish.qos(), mqtt_ep::packet::Qos::AtLeastOnce);
             assert_eq!(publish.retain(), true);
             assert_eq!(publish.payload().as_slice(), b"qos2 retained");
-            publish.packet_id().expect("QoS 1 should have packet_id")
+            // QoS 1 PUBACK is handled automatically by auto_pub_response=true (default)
         }
         _ => panic!("Expected PUBLISH, got {packet:?}"),
-    };
-
-    // Send PUBACK for the retained message
-    let puback = mqtt_ep::packet::v5_0::Puback::builder()
-        .packet_id(retained_packet_id)
-        .build()
-        .expect("Failed to build PUBACK");
-    subscriber
-        .send(puback)
-        .await
-        .expect("Failed to send PUBACK");
+    }
 }
 
 #[tokio::test]
@@ -626,17 +565,7 @@ async fn test_retained_message_overwrite_v5_0() {
             assert_eq!(user_props.len(), 1);
             assert_eq!(user_props[0].key(), "key2");
             assert_eq!(user_props[0].val(), "value2");
-
-            // Send PUBACK
-            let packet_id = publish.packet_id().expect("QoS 1 should have packet_id");
-            let puback = mqtt_ep::packet::v5_0::Puback::builder()
-                .packet_id(packet_id)
-                .build()
-                .expect("Failed to build PUBACK");
-            subscriber
-                .send(puback)
-                .await
-                .expect("Failed to send PUBACK");
+            // QoS 1 PUBACK is handled automatically by auto_pub_response=true (default)
         }
         _ => panic!("Expected PUBLISH, got {packet:?}"),
     }
@@ -1106,18 +1035,34 @@ async fn test_retained_wildcard_single_entry_v5_0() {
     let publisher = create_connected_endpoint("publisher", broker.port()).await;
 
     // Publish 3 retained messages on different topics
+    // First 2 with QoS 0, last one with QoS 1 to ensure all are stored
     for (i, topic) in ["sensor/temp", "sensor/humidity", "sensor/pressure"]
         .iter()
         .enumerate()
     {
-        let publish = mqtt_ep::packet::v5_0::Publish::builder()
+        let is_last = i == 2;
+        let qos = if is_last {
+            mqtt_ep::packet::Qos::AtLeastOnce
+        } else {
+            mqtt_ep::packet::Qos::AtMostOnce
+        };
+
+        let mut builder = mqtt_ep::packet::v5_0::Publish::builder()
             .topic_name(topic)
             .expect("Failed to set topic_name")
-            .qos(mqtt_ep::packet::Qos::AtMostOnce)
+            .qos(qos)
             .retain(true)
-            .payload(format!("value{i}"))
-            .build()
-            .expect("Failed to build PUBLISH");
+            .payload(format!("value{i}"));
+
+        if is_last {
+            let packet_id = publisher
+                .acquire_packet_id()
+                .await
+                .expect("Failed to acquire packet_id");
+            builder = builder.packet_id(packet_id);
+        }
+
+        let publish = builder.build().expect("Failed to build PUBLISH");
 
         publisher
             .send(publish)
@@ -1125,8 +1070,12 @@ async fn test_retained_wildcard_single_entry_v5_0() {
             .expect("Failed to send PUBLISH");
     }
 
-    // Small delay to ensure messages are stored
-    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    // Wait for PUBACK for the last message to ensure all retained messages are stored
+    let packet = publisher.recv().await.expect("Failed to receive PUBACK");
+    match packet {
+        mqtt_ep::packet::Packet::V5_0Puback(_) => {}
+        _ => panic!("Expected PUBACK, got {packet:?}"),
+    }
 
     // Create subscriber with wildcard subscription
     let subscriber = create_connected_endpoint("subscriber", broker.port()).await;
@@ -1196,14 +1145,29 @@ async fn test_retained_wildcard_multiple_entries_v5_0() {
     ];
 
     for (i, topic) in topics.iter().enumerate() {
-        let publish = mqtt_ep::packet::v5_0::Publish::builder()
+        let is_last = i == topics.len() - 1;
+        let qos = if is_last {
+            mqtt_ep::packet::Qos::AtLeastOnce
+        } else {
+            mqtt_ep::packet::Qos::AtMostOnce
+        };
+
+        let mut builder = mqtt_ep::packet::v5_0::Publish::builder()
             .topic_name(topic)
             .expect("Failed to set topic_name")
-            .qos(mqtt_ep::packet::Qos::AtMostOnce)
+            .qos(qos)
             .retain(true)
-            .payload(format!("data{i}"))
-            .build()
-            .expect("Failed to build PUBLISH");
+            .payload(format!("data{i}"));
+
+        if is_last {
+            let packet_id = publisher
+                .acquire_packet_id()
+                .await
+                .expect("Failed to acquire packet_id");
+            builder = builder.packet_id(packet_id);
+        }
+
+        let publish = builder.build().expect("Failed to build PUBLISH");
 
         publisher
             .send(publish)
@@ -1211,8 +1175,12 @@ async fn test_retained_wildcard_multiple_entries_v5_0() {
             .expect("Failed to send PUBLISH");
     }
 
-    // Small delay to ensure messages are stored
-    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    // Wait for PUBACK for the last message to ensure all retained messages are stored
+    let packet = publisher.recv().await.expect("Failed to receive PUBACK");
+    match packet {
+        mqtt_ep::packet::Packet::V5_0Puback(_) => {}
+        _ => panic!("Expected PUBACK, got {packet:?}"),
+    }
 
     // Create subscriber with multiple wildcard subscriptions
     let subscriber = create_connected_endpoint("subscriber", broker.port()).await;

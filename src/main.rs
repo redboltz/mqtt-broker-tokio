@@ -22,6 +22,7 @@
 mod broker;
 mod retained_store;
 mod session_store;
+mod shared_subscription_manager;
 mod subscription_store;
 mod tracing_setup;
 

@@ -288,7 +288,51 @@ impl BrokerManager {
             trace!("No subscribers found for topic '{topic}'");
         }
 
-        // Send QoS response based on QoS level
+        // Send to subscribers BEFORE sending QoS response
+        // This ensures retained message storage and distribution complete before PUBACK/PUBREC
+        if has_subscribers {
+            // Send to subscribers sequentially (each endpoint.send() queues via mpsc)
+            for subscription in subscriptions {
+                // QoS arbitration: use the lower of publish QoS and subscription QoS
+                let effective_qos = qos.min(subscription.qos);
+
+                // RAP (Retain As Published): if rap is false, always send with retain=false
+                // if rap is true, send with the original retain flag
+                let effective_retain = if subscription.rap { retain } else { false };
+
+                // Prepare properties for v5.0
+                let mut props = publisher_props.clone();
+                if let Some(sub_id) = subscription.sub_id {
+                    props.push(mqtt_ep::packet::Property::SubscriptionIdentifier(
+                        mqtt_ep::packet::SubscriptionIdentifier::new(sub_id).unwrap(),
+                    ));
+                }
+
+                // Get session and send PUBLISH
+                if let Some(session_arc) = session_store
+                    .get_session(&subscription.session_ref.session_id)
+                    .await
+                {
+                    let mut session_guard = session_arc.write().await;
+                    session_guard
+                        .send_publish(
+                            topic.to_string(),
+                            effective_qos,
+                            effective_retain,
+                            arc_payload.clone(),
+                            props,
+                        )
+                        .await;
+                } else {
+                    trace!(
+                        "Session not found for subscription: {:?}",
+                        subscription.session_ref
+                    );
+                }
+            }
+        }
+
+        // Send QoS response AFTER distribution completes
         match qos {
             mqtt_ep::packet::Qos::AtMostOnce => {
                 // QoS 0: No response needed
@@ -330,50 +374,6 @@ impl BrokerManager {
                     };
 
                 Self::send_pubrec(endpoint, packet_id, reason_code, props).await?;
-            }
-        }
-
-        if !has_subscribers {
-            return Ok(());
-        }
-
-        // Send to subscribers sequentially (each endpoint.send() queues via mpsc)
-        for subscription in subscriptions {
-            // QoS arbitration: use the lower of publish QoS and subscription QoS
-            let effective_qos = qos.min(subscription.qos);
-
-            // RAP (Retain As Published): if rap is false, always send with retain=false
-            // if rap is true, send with the original retain flag
-            let effective_retain = if subscription.rap { retain } else { false };
-
-            // Prepare properties for v5.0
-            let mut props = publisher_props.clone();
-            if let Some(sub_id) = subscription.sub_id {
-                props.push(mqtt_ep::packet::Property::SubscriptionIdentifier(
-                    mqtt_ep::packet::SubscriptionIdentifier::new(sub_id).unwrap(),
-                ));
-            }
-
-            // Get session and send PUBLISH
-            if let Some(session_arc) = session_store
-                .get_session(&subscription.session_ref.session_id)
-                .await
-            {
-                let mut session_guard = session_arc.write().await;
-                session_guard
-                    .send_publish(
-                        topic.to_string(),
-                        effective_qos,
-                        effective_retain,
-                        arc_payload.clone(),
-                        props,
-                    )
-                    .await;
-            } else {
-                trace!(
-                    "Session not found for subscription: {:?}",
-                    subscription.session_ref
-                );
             }
         }
 

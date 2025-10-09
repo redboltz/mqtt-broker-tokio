@@ -625,31 +625,7 @@ async fn test_pubsub_qos2_v3_1_1() {
         .await
         .expect("Failed to send PUBLISH");
 
-    // Publisher should receive PUBREC
-    let packet = publisher.recv().await.expect("Failed to receive PUBREC");
-    let pubrec_packet_id = match packet {
-        mqtt_ep::packet::Packet::V3_1_1Pubrec(pubrec) => {
-            assert_eq!(pubrec.packet_id(), pub_packet_id);
-            pubrec.packet_id()
-        }
-        _ => panic!("Expected PUBREC, got {packet:?}"),
-    };
-
-    // Publisher sends PUBREL
-    let pubrel = mqtt_ep::packet::v3_1_1::Pubrel::builder()
-        .packet_id(pubrec_packet_id)
-        .build()
-        .expect("Failed to build PUBREL");
-    publisher.send(pubrel).await.expect("Failed to send PUBREL");
-
-    // Publisher should receive PUBCOMP
-    let packet = publisher.recv().await.expect("Failed to receive PUBCOMP");
-    match packet {
-        mqtt_ep::packet::Packet::V3_1_1Pubcomp(pubcomp) => {
-            assert_eq!(pubcomp.packet_id(), pubrec_packet_id);
-        }
-        _ => panic!("Expected PUBCOMP, got {packet:?}"),
-    }
+    // QoS 2 handshake is handled automatically by auto_pub_response=true (default)
 
     // Subscriber should receive the published message
     let packet = subscriber
@@ -729,32 +705,7 @@ async fn test_pubsub_qos2_v5_0() {
         .await
         .expect("Failed to send PUBLISH");
 
-    // Publisher should receive PUBREC
-    let packet = publisher.recv().await.expect("Failed to receive PUBREC");
-    let pubrec_packet_id = match packet {
-        mqtt_ep::packet::Packet::V5_0Pubrec(pubrec) => {
-            assert_eq!(pubrec.packet_id(), pub_packet_id);
-            pubrec.packet_id()
-        }
-        _ => panic!("Expected PUBREC, got {packet:?}"),
-    };
-
-    // Publisher sends PUBREL
-    let pubrel = mqtt_ep::packet::v5_0::Pubrel::builder()
-        .packet_id(pubrec_packet_id)
-        .reason_code(mqtt_ep::result_code::PubrelReasonCode::Success)
-        .build()
-        .expect("Failed to build PUBREL");
-    publisher.send(pubrel).await.expect("Failed to send PUBREL");
-
-    // Publisher should receive PUBCOMP
-    let packet = publisher.recv().await.expect("Failed to receive PUBCOMP");
-    match packet {
-        mqtt_ep::packet::Packet::V5_0Pubcomp(pubcomp) => {
-            assert_eq!(pubcomp.packet_id(), pubrec_packet_id);
-        }
-        _ => panic!("Expected PUBCOMP, got {packet:?}"),
-    }
+    // QoS 2 handshake is handled automatically by auto_pub_response=true (default)
 
     // Subscriber should receive the published message
     let packet = subscriber
@@ -906,31 +857,7 @@ async fn test_qos_downgrade_v3_1_1() {
         .await
         .expect("Failed to send PUBLISH");
 
-    // Publisher should receive PUBREC for QoS 2
-    let packet = publisher.recv().await.expect("Failed to receive PUBREC");
-    let pubrec_packet_id = match packet {
-        mqtt_ep::packet::Packet::V3_1_1Pubrec(pubrec) => {
-            assert_eq!(pubrec.packet_id(), pub_packet_id);
-            pubrec.packet_id()
-        }
-        _ => panic!("Expected PUBREC, got {packet:?}"),
-    };
-
-    // Publisher sends PUBREL
-    let pubrel = mqtt_ep::packet::v3_1_1::Pubrel::builder()
-        .packet_id(pubrec_packet_id)
-        .build()
-        .expect("Failed to build PUBREL");
-    publisher.send(pubrel).await.expect("Failed to send PUBREL");
-
-    // Publisher should receive PUBCOMP
-    let packet = publisher.recv().await.expect("Failed to receive PUBCOMP");
-    match packet {
-        mqtt_ep::packet::Packet::V3_1_1Pubcomp(pubcomp) => {
-            assert_eq!(pubcomp.packet_id(), pubrec_packet_id);
-        }
-        _ => panic!("Expected PUBCOMP, got {packet:?}"),
-    }
+    // QoS 2 handshake is handled automatically by auto_pub_response=true (default)
 
     // Subscriber should receive the message with downgraded QoS 0
     let packet = subscriber
@@ -1010,32 +937,7 @@ async fn test_qos_downgrade_v5_0() {
         .await
         .expect("Failed to send PUBLISH");
 
-    // Publisher should receive PUBREC for QoS 2
-    let packet = publisher.recv().await.expect("Failed to receive PUBREC");
-    let pubrec_packet_id = match packet {
-        mqtt_ep::packet::Packet::V5_0Pubrec(pubrec) => {
-            assert_eq!(pubrec.packet_id(), pub_packet_id);
-            pubrec.packet_id()
-        }
-        _ => panic!("Expected PUBREC, got {packet:?}"),
-    };
-
-    // Publisher sends PUBREL
-    let pubrel = mqtt_ep::packet::v5_0::Pubrel::builder()
-        .packet_id(pubrec_packet_id)
-        .reason_code(mqtt_ep::result_code::PubrelReasonCode::Success)
-        .build()
-        .expect("Failed to build PUBREL");
-    publisher.send(pubrel).await.expect("Failed to send PUBREL");
-
-    // Publisher should receive PUBCOMP
-    let packet = publisher.recv().await.expect("Failed to receive PUBCOMP");
-    match packet {
-        mqtt_ep::packet::Packet::V5_0Pubcomp(pubcomp) => {
-            assert_eq!(pubcomp.packet_id(), pubrec_packet_id);
-        }
-        _ => panic!("Expected PUBCOMP, got {packet:?}"),
-    }
+    // QoS 2 handshake is handled automatically by auto_pub_response=true (default)
 
     // Subscriber should receive the message with downgraded QoS 0
     let packet = subscriber

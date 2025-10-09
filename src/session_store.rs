@@ -42,6 +42,16 @@ impl SessionId {
     }
 }
 
+impl std::fmt::Display for SessionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(ref user_name) = self.user_name {
+            write!(f, "{}:{}", user_name, self.client_id)
+        } else {
+            write!(f, "{}", self.client_id)
+        }
+    }
+}
+
 /// Offline message stored for QoS1/QoS2
 #[derive(Debug, Clone)]
 pub struct OfflineMessage {
@@ -182,14 +192,21 @@ impl Session {
 
             match endpoint_version {
                 mqtt_ep::Version::V3_1_1 => {
-                    let publish = mqtt_ep::packet::v3_1_1::Publish::builder()
+                    let mut builder = mqtt_ep::packet::v3_1_1::Publish::builder()
                         .topic_name(&topic_name)
                         .expect("Failed to set topic_name")
                         .qos(qos)
                         .retain(retain)
-                        .payload(payload.clone())
-                        .build()
-                        .expect("Failed to build PUBLISH");
+                        .payload(payload.clone());
+
+                    let publish = if qos != mqtt_ep::packet::Qos::AtMostOnce {
+                        // Acquire packet ID for QoS > 0
+                        let packet_id = endpoint.acquire_packet_id().await.unwrap_or(1);
+                        builder = builder.packet_id(packet_id);
+                        builder.build().expect("Failed to build PUBLISH")
+                    } else {
+                        builder.build().expect("Failed to build PUBLISH")
+                    };
 
                     if let Err(e) = endpoint.send(publish).await {
                         debug!(
@@ -199,15 +216,25 @@ impl Session {
                     }
                 }
                 mqtt_ep::Version::V5_0 => {
-                    let publish = mqtt_ep::packet::v5_0::Publish::builder()
+                    let mut builder = mqtt_ep::packet::v5_0::Publish::builder()
                         .topic_name(&topic_name)
                         .expect("Failed to set topic_name")
                         .qos(qos)
                         .retain(retain)
-                        .payload(payload.clone())
-                        .props(props.clone())
-                        .build()
-                        .expect("Failed to build PUBLISH");
+                        .payload(payload.clone());
+
+                    if !props.is_empty() {
+                        builder = builder.props(props.clone());
+                    }
+
+                    let publish = if qos != mqtt_ep::packet::Qos::AtMostOnce {
+                        // Acquire packet ID for QoS > 0
+                        let packet_id = endpoint.acquire_packet_id().await.unwrap_or(1);
+                        builder = builder.packet_id(packet_id);
+                        builder.build().expect("Failed to build PUBLISH")
+                    } else {
+                        builder.build().expect("Failed to build PUBLISH")
+                    };
 
                     if let Err(e) = endpoint.send(publish).await {
                         debug!(

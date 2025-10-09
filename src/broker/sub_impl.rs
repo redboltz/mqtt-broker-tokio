@@ -7,7 +7,7 @@
 use super::BrokerManager;
 use super::SubscriptionMessage;
 use crate::retained_store::RetainedStore;
-use crate::session_store::SessionRef;
+use crate::session_store::{SessionRef, SessionStore};
 use crate::subscription_store::SubscriptionStore;
 use mqtt_endpoint_tokio::mqtt_ep;
 use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
@@ -27,6 +27,7 @@ impl BrokerManager {
         session_ref: &SessionRef,
         _subscription_store: &Arc<SubscriptionStore>,
         retained_store: &Arc<RetainedStore>,
+        session_store: &Arc<SessionStore>,
     ) -> anyhow::Result<()> {
         // Extract SubscriptionIdentifier from properties
         let sub_id = props.iter().find_map(|prop| match prop {
@@ -117,19 +118,27 @@ impl BrokerManager {
                         ));
                     }
 
-                    // Send retained message as PUBLISH
-                    if let Err(e) = Self::send_publish(
-                        endpoint,
-                        &retained_msg.topic_name,
-                        effective_qos,
-                        true,  // retain flag stays true for retained messages
-                        false, // dup is false
-                        retained_msg.payload.clone(),
-                        msg_props,
-                    )
-                    .await
+                    // Send retained message as PUBLISH via Session
+                    // MQTT spec: retained messages must always have retain=true when delivered
+                    // RAP only affects forwarding of new messages, not retained message delivery
+                    if let Some(session_arc) =
+                        session_store.get_session(&session_ref.session_id).await
                     {
-                        trace!("Failed to send retained message: {e}");
+                        let mut session_guard = session_arc.write().await;
+                        session_guard
+                            .send_publish(
+                                retained_msg.topic_name.clone(),
+                                effective_qos,
+                                true, // retain flag must be true for retained messages (MQTT spec)
+                                retained_msg.payload.clone(),
+                                msg_props,
+                            )
+                            .await;
+                    } else {
+                        trace!(
+                            "Session not found for retained message delivery: {:?}",
+                            session_ref
+                        );
                     }
                 }
             }

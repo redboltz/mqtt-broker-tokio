@@ -138,6 +138,9 @@ struct TrieNode {
 pub struct SubscriptionStore {
     /// Root of the trie structure
     root: Arc<RwLock<TrieNode>>,
+    /// Shared subscriptions manager with LRU-based round-robin at share-name level
+    shared_subscriptions:
+        Arc<RwLock<crate::shared_subscription_manager::SharedSubscriptionManager>>,
 }
 
 impl SubscriptionStore {
@@ -145,7 +148,26 @@ impl SubscriptionStore {
     pub fn new() -> Self {
         Self {
             root: Arc::new(RwLock::new(TrieNode::default())),
+            shared_subscriptions: Arc::new(RwLock::new(
+                crate::shared_subscription_manager::SharedSubscriptionManager::new(),
+            )),
         }
+    }
+
+    /// Parse shared subscription topic filter
+    /// Returns None if not a shared subscription
+    /// Returns Some((share_name, actual_topic_filter)) if it is
+    fn parse_shared_subscription(topic_filter: &str) -> Option<(String, String)> {
+        if let Some(stripped) = topic_filter.strip_prefix("$share/") {
+            if let Some(slash_pos) = stripped.find('/') {
+                let share_name = stripped[..slash_pos].to_string();
+                let actual_filter = stripped[slash_pos + 1..].to_string();
+                if !share_name.is_empty() && !actual_filter.is_empty() {
+                    return Some((share_name, actual_filter));
+                }
+            }
+        }
+        None
     }
 
     /// Add a subscription for a session to a topic filter
@@ -158,30 +180,59 @@ impl SubscriptionStore {
         sub_id: Option<u32>,
         rap: bool,
     ) -> Result<bool, SubscriptionError> {
-        Self::validate_topic_filter(topic_filter)?;
+        // Check if this is a shared subscription
+        if let Some((share_name, actual_filter)) = Self::parse_shared_subscription(topic_filter) {
+            // Validate the actual topic filter
+            Self::validate_topic_filter(&actual_filter)?;
 
-        let mut root = self.root.write().await;
-        let segments: Vec<&str> = topic_filter.split('/').collect();
+            let mut shared_subs = self.shared_subscriptions.write().await;
 
-        let is_new = Self::insert_subscription(
-            &mut root,
-            &segments,
-            session_ref.clone(),
-            topic_filter,
-            qos,
-            sub_id,
-            rap,
-            0,
-        );
+            // Use SharedSubscriptionManager to insert the subscription
+            shared_subs.insert(
+                share_name.clone(),
+                actual_filter.clone(),
+                session_ref,
+                crate::shared_subscription_manager::SubscriptionDetails {
+                    qos,
+                    topic_filter: actual_filter.clone(),
+                    sub_id,
+                    rap,
+                },
+            );
 
-        trace!(
-            "Subscribed session to topic filter '{topic_filter}' with QoS {qos:?}, sub_id {sub_id:?}, is_new: {is_new}"
-        );
-        Ok(is_new)
+            trace!(
+                "Shared subscription: session subscribed to '{topic_filter}' (share: {share_name}, filter: {actual_filter}) with QoS {qos:?}"
+            );
+            // For now, always return true for shared subscriptions (could track is_new in manager if needed)
+            Ok(true)
+        } else {
+            // Regular subscription
+            Self::validate_topic_filter(topic_filter)?;
+
+            let mut root = self.root.write().await;
+            let segments: Vec<&str> = topic_filter.split('/').collect();
+
+            let is_new = Self::insert_subscription(
+                &mut root,
+                &segments,
+                session_ref.clone(),
+                topic_filter,
+                qos,
+                sub_id,
+                rap,
+                0,
+            );
+
+            trace!(
+                "Subscribed session to topic filter '{topic_filter}' with QoS {qos:?}, sub_id {sub_id:?}, is_new: {is_new}"
+            );
+            Ok(is_new)
+        }
     }
 
     /// Recursively insert subscription into trie
     /// Returns true if this is a new subscription, false if updating existing
+    #[allow(clippy::too_many_arguments)]
     fn insert_subscription(
         node: &mut TrieNode,
         segments: &[&str],
@@ -309,13 +360,23 @@ impl SubscriptionStore {
         session_ref: &SessionRef,
         topic_filter: &str,
     ) -> Result<bool, SubscriptionError> {
-        Self::validate_topic_filter(topic_filter)?;
+        // Check if this is a shared subscription
+        if let Some((share_name, actual_filter)) = Self::parse_shared_subscription(topic_filter) {
+            let mut shared_subs = self.shared_subscriptions.write().await;
 
-        let mut root = self.root.write().await;
-        let segments: Vec<&str> = topic_filter.split('/').collect();
+            // Use SharedSubscriptionManager to erase the subscription
+            let removed = shared_subs.erase(&share_name, &actual_filter, session_ref);
+            Ok(removed)
+        } else {
+            // Regular subscription
+            Self::validate_topic_filter(topic_filter)?;
 
-        let removed = Self::remove_subscription(&mut root, &segments, session_ref, 0);
-        Ok(removed)
+            let mut root = self.root.write().await;
+            let segments: Vec<&str> = topic_filter.split('/').collect();
+
+            let removed = Self::remove_subscription(&mut root, &segments, session_ref, 0);
+            Ok(removed)
+        }
     }
 
     /// Recursively remove subscription from trie
@@ -372,8 +433,15 @@ impl SubscriptionStore {
 
     /// Remove all subscriptions for a session
     pub async fn unsubscribe_all(&self, session_ref: &SessionRef) {
+        // Remove regular subscriptions
         let mut root = self.root.write().await;
         Self::remove_all_subscriptions(&mut root, session_ref);
+        drop(root);
+
+        // Remove shared subscriptions
+        let mut shared_subs = self.shared_subscriptions.write().await;
+        // Use SharedSubscriptionManager to remove all subscriptions for this session
+        shared_subs.erase_session(session_ref);
     }
 
     /// Recursively remove all subscriptions for a session
@@ -397,15 +465,15 @@ impl SubscriptionStore {
 
     /// Find all subscriber endpoints for a given published topic
     pub async fn find_subscribers(&self, topic: &str) -> Vec<Subscription> {
+        // Get regular subscribers
         let root = self.root.read().await;
         let mut all_subscribers = Vec::new();
         let segments: Vec<&str> = topic.split('/').collect();
 
-        // trace!("Looking for subscribers to topic '{}'", topic);
-
         Self::collect_subscribers(&root, &segments, 0, &mut all_subscribers);
+        drop(root);
 
-        let result: Vec<Subscription> = all_subscribers
+        let mut result: Vec<Subscription> = all_subscribers
             .into_iter()
             .map(|entry| Subscription {
                 session_ref: entry.session_ref,
@@ -415,8 +483,58 @@ impl SubscriptionStore {
                 rap: entry.rap,
             })
             .collect();
-        // trace!("Final subscriber list for '{}': {} subscriptions", topic, result.len());
+
+        // Get shared subscribers (share-name level round-robin with LRU)
+        let mut shared_subs = self.shared_subscriptions.write().await;
+
+        // Find all matching shared subscriptions using the SharedSubscriptionManager
+        let shared_matches = shared_subs.find_all_targets(&segments, Self::topic_matches_filter);
+
+        for (_share_name, session_ref, details) in shared_matches {
+            result.push(Subscription {
+                session_ref,
+                qos: details.qos,
+                topic_filter: details.topic_filter,
+                sub_id: details.sub_id,
+                rap: details.rap,
+            });
+
+            trace!("Shared subscription match: topic '{topic}' matched with LRU selection");
+        }
+
         result
+    }
+
+    /// Check if a topic matches a topic filter (for shared subscriptions)
+    fn topic_matches_filter(topic_segments: &[&str], filter_segments: &[&str]) -> bool {
+        let mut topic_idx = 0;
+        let mut filter_idx = 0;
+
+        while filter_idx < filter_segments.len() {
+            let filter_seg = filter_segments[filter_idx];
+
+            if filter_seg == "#" {
+                // Multi-level wildcard matches everything remaining
+                return true;
+            } else if filter_seg == "+" {
+                // Single-level wildcard matches any single segment
+                if topic_idx >= topic_segments.len() {
+                    return false;
+                }
+                topic_idx += 1;
+                filter_idx += 1;
+            } else {
+                // Exact match required
+                if topic_idx >= topic_segments.len() || topic_segments[topic_idx] != filter_seg {
+                    return false;
+                }
+                topic_idx += 1;
+                filter_idx += 1;
+            }
+        }
+
+        // Both must be at the end
+        topic_idx == topic_segments.len()
     }
 
     /// Recursively collect all matching subscribers

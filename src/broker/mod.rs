@@ -467,6 +467,7 @@ impl BrokerManager {
     }
 
     /// Handle received packet in endpoint task (direct processing)
+    #[allow(clippy::too_many_arguments)]
     async fn handle_received_packet_in_endpoint(
         client_id: &str,
         packet: &mqtt_ep::packet::Packet,
@@ -488,6 +489,7 @@ impl BrokerManager {
                     session_ref,
                     subscription_store,
                     retained_store,
+                    session_store,
                 )
                 .await?;
             }
@@ -501,6 +503,7 @@ impl BrokerManager {
                     session_ref,
                     subscription_store,
                     retained_store,
+                    session_store,
                 )
                 .await?;
             }

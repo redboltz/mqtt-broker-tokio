@@ -23,27 +23,37 @@
 use mqtt_endpoint_tokio::mqtt_ep;
 use std::sync::Arc;
 
+// Include session_store module for testing (must be included first since subscription_store depends on it)
+mod session_store {
+    include!("../src/session_store.rs");
+}
+
+// Include shared_subscription_manager module for testing (subscription_store depends on it)
+mod shared_subscription_manager {
+    include!("../src/shared_subscription_manager.rs");
+}
+
 // Include subscription_store module for testing
 mod common_subscription {
     include!("../src/subscription_store.rs");
 }
 
-use common_subscription::{EndpointRef, SubscriptionStore};
+use common_subscription::SubscriptionStore;
+use session_store::{SessionId, SessionRef};
 
-// Helper function to create mock endpoint
-fn create_mock_endpoint() -> EndpointRef {
-    let endpoint = mqtt_ep::Endpoint::<mqtt_ep::role::Server>::new(mqtt_ep::Version::V5_0);
-    EndpointRef::new(Arc::new(endpoint))
+// Helper function to create mock session reference
+fn create_mock_session_ref(id: &str) -> SessionRef {
+    SessionRef::new(SessionId::new(None, id.to_string()))
 }
 #[tokio::test]
 async fn test_same_endpoint_multiple_subscriptions() {
     let store = SubscriptionStore::new();
-    let endpoint = create_mock_endpoint();
+    let session_ref = create_mock_session_ref("client1");
 
     // Same endpoint subscribes to multiple patterns that match the same topic
     store
         .subscribe(
-            endpoint.clone(),
+            session_ref.clone(),
             "a/b",
             mqtt_ep::packet::Qos::AtMostOnce,
             Some(1),
@@ -53,7 +63,7 @@ async fn test_same_endpoint_multiple_subscriptions() {
         .unwrap();
     store
         .subscribe(
-            endpoint.clone(),
+            session_ref.clone(),
             "a/+",
             mqtt_ep::packet::Qos::AtLeastOnce,
             Some(2),
@@ -63,7 +73,7 @@ async fn test_same_endpoint_multiple_subscriptions() {
         .unwrap();
     store
         .subscribe(
-            endpoint.clone(),
+            session_ref.clone(),
             "a/#",
             mqtt_ep::packet::Qos::ExactlyOnce,
             Some(3),
@@ -109,12 +119,12 @@ async fn test_same_endpoint_multiple_subscriptions() {
 #[tokio::test]
 async fn test_qos_and_sub_id_overwrite() {
     let store = SubscriptionStore::new();
-    let endpoint = create_mock_endpoint();
+    let session_ref = create_mock_session_ref("client1");
 
     // Subscribe with initial values
     store
         .subscribe(
-            endpoint.clone(),
+            session_ref.clone(),
             "test/topic",
             mqtt_ep::packet::Qos::AtMostOnce,
             Some(100),
@@ -131,7 +141,7 @@ async fn test_qos_and_sub_id_overwrite() {
     // Subscribe again with different QoS and sub_id (should overwrite)
     store
         .subscribe(
-            endpoint.clone(),
+            session_ref.clone(),
             "test/topic",
             mqtt_ep::packet::Qos::ExactlyOnce,
             Some(200),
@@ -149,12 +159,12 @@ async fn test_qos_and_sub_id_overwrite() {
 #[tokio::test]
 async fn test_partial_unsubscribe() {
     let store = SubscriptionStore::new();
-    let endpoint = create_mock_endpoint();
+    let session_ref = create_mock_session_ref("client1");
 
     // Subscribe to multiple patterns
     store
         .subscribe(
-            endpoint.clone(),
+            session_ref.clone(),
             "sensor/+/temperature",
             mqtt_ep::packet::Qos::AtMostOnce,
             Some(1),
@@ -164,7 +174,7 @@ async fn test_partial_unsubscribe() {
         .unwrap();
     store
         .subscribe(
-            endpoint.clone(),
+            session_ref.clone(),
             "sensor/#",
             mqtt_ep::packet::Qos::AtLeastOnce,
             Some(2),
@@ -174,7 +184,7 @@ async fn test_partial_unsubscribe() {
         .unwrap();
     store
         .subscribe(
-            endpoint.clone(),
+            session_ref.clone(),
             "sensor/room1/temperature",
             mqtt_ep::packet::Qos::ExactlyOnce,
             Some(3),
@@ -189,7 +199,7 @@ async fn test_partial_unsubscribe() {
 
     // Unsubscribe from one pattern
     let removed = store
-        .unsubscribe(&endpoint, "sensor/+/temperature")
+        .unsubscribe(&session_ref, "sensor/+/temperature")
         .await
         .unwrap();
     assert!(removed);
@@ -210,12 +220,12 @@ async fn test_partial_unsubscribe() {
 #[tokio::test]
 async fn test_complex_wildcard_patterns() {
     let store = SubscriptionStore::new();
-    let endpoint = create_mock_endpoint();
+    let session_ref = create_mock_session_ref("client1");
 
     // Subscribe to complex pattern: a/+/c/+/e
     store
         .subscribe(
-            endpoint.clone(),
+            session_ref.clone(),
             "a/+/c/+/e",
             mqtt_ep::packet::Qos::AtMostOnce,
             Some(1),
@@ -245,12 +255,12 @@ async fn test_complex_wildcard_patterns() {
 #[tokio::test]
 async fn test_mixed_wildcard_pattern() {
     let store = SubscriptionStore::new();
-    let endpoint = create_mock_endpoint();
+    let session_ref = create_mock_session_ref("client1");
 
     // Subscribe to mixed pattern: a/+/#
     store
         .subscribe(
-            endpoint.clone(),
+            session_ref.clone(),
             "a/+/#",
             mqtt_ep::packet::Qos::AtMostOnce,
             Some(1),
@@ -287,12 +297,12 @@ async fn test_mixed_wildcard_pattern() {
 #[tokio::test]
 async fn test_root_multilevel_wildcard() {
     let store = SubscriptionStore::new();
-    let endpoint = create_mock_endpoint();
+    let session_ref = create_mock_session_ref("client1");
 
     // Subscribe to root multilevel wildcard
     store
         .subscribe(
-            endpoint.clone(),
+            session_ref.clone(),
             "#",
             mqtt_ep::packet::Qos::AtMostOnce,
             Some(1),
@@ -315,12 +325,12 @@ async fn test_root_multilevel_wildcard() {
 #[tokio::test]
 async fn test_empty_segment_handling() {
     let store = SubscriptionStore::new();
-    let endpoint = create_mock_endpoint();
+    let session_ref = create_mock_session_ref("client1");
 
     // Subscribe to pattern with empty segments
     store
         .subscribe(
-            endpoint.clone(),
+            session_ref.clone(),
             "a//b",
             mqtt_ep::packet::Qos::AtMostOnce,
             Some(1),
@@ -330,7 +340,7 @@ async fn test_empty_segment_handling() {
         .unwrap();
     store
         .subscribe(
-            endpoint.clone(),
+            session_ref.clone(),
             "a/+/b",
             mqtt_ep::packet::Qos::AtLeastOnce,
             Some(2),
@@ -355,13 +365,13 @@ async fn test_empty_segment_handling() {
 #[tokio::test]
 async fn test_multiple_endpoints_same_pattern() {
     let store = SubscriptionStore::new();
-    let endpoint1 = create_mock_endpoint();
-    let endpoint2 = create_mock_endpoint();
+    let session_ref1 = create_mock_session_ref("client1");
+    let session_ref2 = create_mock_session_ref("client2");
 
-    // Different endpoints subscribe to same pattern
+    // Different sessions subscribe to same pattern
     store
         .subscribe(
-            endpoint1.clone(),
+            session_ref1.clone(),
             "test/topic",
             mqtt_ep::packet::Qos::AtMostOnce,
             Some(1),
@@ -371,7 +381,7 @@ async fn test_multiple_endpoints_same_pattern() {
         .unwrap();
     store
         .subscribe(
-            endpoint2.clone(),
+            session_ref2.clone(),
             "test/topic",
             mqtt_ep::packet::Qos::AtLeastOnce,
             Some(2),
@@ -383,20 +393,20 @@ async fn test_multiple_endpoints_same_pattern() {
     let subscriptions = store.find_subscribers("test/topic").await;
     assert_eq!(subscriptions.len(), 2);
 
-    // Verify different endpoints
-    let endpoints: Vec<_> = subscriptions.iter().map(|s| &s.endpoint).collect();
-    assert!(endpoints.contains(&&endpoint1));
-    assert!(endpoints.contains(&&endpoint2));
+    // Verify different sessions
+    let session_refs: Vec<_> = subscriptions.iter().map(|s| &s.session_ref).collect();
+    assert!(session_refs.contains(&&session_ref1));
+    assert!(session_refs.contains(&&session_ref2));
 }
 
 #[tokio::test]
 async fn test_unsubscribe_nonexistent() {
     let store = SubscriptionStore::new();
-    let endpoint = create_mock_endpoint();
+    let session_ref = create_mock_session_ref("client1");
 
     // Try to unsubscribe from non-existent subscription
     let removed = store
-        .unsubscribe(&endpoint, "nonexistent/topic")
+        .unsubscribe(&session_ref, "nonexistent/topic")
         .await
         .unwrap();
     assert!(!removed);
@@ -405,12 +415,12 @@ async fn test_unsubscribe_nonexistent() {
 #[tokio::test]
 async fn test_subscription_with_none_sub_id() {
     let store = SubscriptionStore::new();
-    let endpoint = create_mock_endpoint();
+    let session_ref = create_mock_session_ref("client1");
 
     // Subscribe with None sub_id (v3.1.1 style)
     store
         .subscribe(
-            endpoint.clone(),
+            session_ref.clone(),
             "test/topic",
             mqtt_ep::packet::Qos::AtMostOnce,
             None,
