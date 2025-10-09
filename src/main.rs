@@ -21,6 +21,7 @@
 // SOFTWARE.
 mod broker;
 mod retained_store;
+mod session_store;
 mod subscription_store;
 mod tracing_setup;
 
