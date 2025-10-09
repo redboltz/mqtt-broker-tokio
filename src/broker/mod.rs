@@ -27,30 +27,30 @@ use tracing::{error, info, trace};
 use uuid::Uuid;
 
 use crate::retained_store::RetainedStore;
-use crate::session_store::{SessionId, SessionStore};
+use crate::session_store::{SessionId, SessionRef, SessionStore};
 use crate::subscription_store::{EndpointRef, SubscriptionStore};
 
 use mqtt_ep::prelude::*;
 
-mod sub_impl;
 mod pub_impl;
+mod sub_impl;
 
 /// Messages sent to BrokerManager for subscription management
 #[derive(Debug)]
 pub enum SubscriptionMessage {
     Subscribe {
-        endpoint: EndpointRef,
+        session_ref: SessionRef,
         topics: Vec<(String, mqtt_ep::packet::Qos, bool)>, // (topic_filter, qos, rap)
         sub_id: Option<u32>,
         response_tx: oneshot::Sender<Vec<(mqtt_ep::result_code::SubackReturnCode, bool)>>, // (return_code, is_new)
     },
     Unsubscribe {
-        endpoint: EndpointRef,
+        session_ref: SessionRef,
         topics: Vec<String>,
         response_tx: oneshot::Sender<Vec<mqtt_ep::result_code::UnsubackReasonCode>>,
     },
     ClientDisconnected {
-        endpoint: EndpointRef,
+        session_ref: SessionRef,
     },
 }
 
@@ -143,7 +143,7 @@ impl BrokerManager {
 
         tokio::spawn(async move {
             // Handle client endpoint
-            let endpoint_ref = Self::handle_client_endpoint(
+            let session_ref = Self::handle_client_endpoint(
                 endpoint,
                 subscription_store_for_endpoint,
                 retained_store_for_endpoint,
@@ -153,9 +153,9 @@ impl BrokerManager {
             .await;
 
             // Clean up when endpoint task finishes
-            if let Some(endpoint_ref) = endpoint_ref {
+            if let Some(session_ref) = session_ref {
                 if let Err(e) = broker_manager_for_cleanup
-                    .handle_client_disconnect(&endpoint_ref)
+                    .handle_client_disconnect(&session_ref)
                     .await
                 {
                     error!("Error during client disconnect cleanup: {e}");
@@ -168,18 +168,18 @@ impl BrokerManager {
     }
 
     /// Handle client disconnection cleanup
-    async fn handle_client_disconnect(&self, endpoint_ref: &EndpointRef) -> anyhow::Result<()> {
-        trace!("Starting disconnect cleanup for endpoint");
+    async fn handle_client_disconnect(&self, session_ref: &SessionRef) -> anyhow::Result<()> {
+        trace!("Starting disconnect cleanup for session");
 
         // Remove from subscription store via message
         let _ = self
             .subscription_tx
             .send(SubscriptionMessage::ClientDisconnected {
-                endpoint: endpoint_ref.clone(),
+                session_ref: session_ref.clone(),
             })
             .await;
 
-        trace!("Endpoint disconnected and cleaned up");
+        trace!("Session disconnected and cleaned up");
         Ok(())
     }
 
@@ -193,7 +193,7 @@ impl BrokerManager {
         while let Some(message) = subscription_rx.recv().await {
             match message {
                 SubscriptionMessage::Subscribe {
-                    endpoint,
+                    session_ref,
                     topics,
                     sub_id,
                     response_tx,
@@ -202,7 +202,7 @@ impl BrokerManager {
 
                     for (topic_filter, qos, rap) in topics {
                         match subscription_store
-                            .subscribe(endpoint.clone(), &topic_filter, qos, sub_id, rap)
+                            .subscribe(session_ref.clone(), &topic_filter, qos, sub_id, rap)
                             .await
                         {
                             Ok(is_new) => {
@@ -219,10 +219,13 @@ impl BrokerManager {
                                     }
                                 };
                                 return_codes.push((return_code, is_new));
-                                trace!("Registered subscription: endpoint topic='{topic_filter}', is_new={is_new}");
+                                trace!(
+                                    "Registered subscription: session topic='{topic_filter}', is_new={is_new}"
+                                );
                             }
                             Err(_) => {
-                                return_codes.push((mqtt_ep::result_code::SubackReturnCode::Failure, false));
+                                return_codes
+                                    .push((mqtt_ep::result_code::SubackReturnCode::Failure, false));
                             }
                         }
                     }
@@ -230,7 +233,7 @@ impl BrokerManager {
                     let _ = response_tx.send(return_codes);
                 }
                 SubscriptionMessage::Unsubscribe {
-                    endpoint,
+                    session_ref,
                     topics,
                     response_tx,
                 } => {
@@ -238,17 +241,17 @@ impl BrokerManager {
 
                     for topic_filter in topics {
                         let _ = subscription_store
-                            .unsubscribe(&endpoint, &topic_filter)
+                            .unsubscribe(&session_ref, &topic_filter)
                             .await;
                         return_codes.push(mqtt_ep::result_code::UnsubackReasonCode::Success);
-                        trace!("Removed subscription: endpoint topic='{topic_filter}'");
+                        trace!("Removed subscription: session topic='{topic_filter}'");
                     }
 
                     let _ = response_tx.send(return_codes);
                 }
-                SubscriptionMessage::ClientDisconnected { endpoint } => {
-                    subscription_store.unsubscribe_all(&endpoint).await;
-                    trace!("Removed all subscriptions for disconnected endpoint");
+                SubscriptionMessage::ClientDisconnected { session_ref } => {
+                    subscription_store.unsubscribe_all(&session_ref).await;
+                    trace!("Removed all subscriptions for disconnected session");
                 }
             }
         }
@@ -263,7 +266,7 @@ impl BrokerManager {
         retained_store: Arc<RetainedStore>,
         session_store: Arc<SessionStore>,
         subscription_tx: mpsc::Sender<SubscriptionMessage>,
-    ) -> Option<EndpointRef> {
+    ) -> Option<SessionRef> {
         trace!("Starting endpoint task (waiting for CONNECT)");
 
         // First, wait for CONNECT packet
@@ -279,7 +282,9 @@ impl BrokerManager {
                         };
                         let user_name = connect.user_name().map(|s| s.to_string());
                         let clean_session = connect.clean_session();
-                        trace!("MQTT v3.1.1 client {extracted_id} connected, clean_session={clean_session}");
+                        trace!(
+                            "MQTT v3.1.1 client {extracted_id} connected, clean_session={clean_session}"
+                        );
 
                         // For v3.1.1: clean_session=false means session persists indefinitely
                         let session_expiry_interval = if clean_session { 0 } else { u32::MAX };
@@ -304,7 +309,9 @@ impl BrokerManager {
                             .build()
                             .unwrap();
 
-                        trace!("Sending CONNACK to client {extracted_id}, session_present={session_present}...");
+                        trace!(
+                            "Sending CONNACK to client {extracted_id}, session_present={session_present}..."
+                        );
                         if let Err(e) = endpoint.send(connack).await {
                             error!("Failed to send CONNACK: {e}");
                             return None;
@@ -335,7 +342,9 @@ impl BrokerManager {
                             })
                             .unwrap_or(0);
 
-                        trace!("MQTT v5.0 client {extracted_id} connected, clean_start={clean_start}, session_expiry_interval={session_expiry_interval}");
+                        trace!(
+                            "MQTT v5.0 client {extracted_id} connected, clean_start={clean_start}, session_expiry_interval={session_expiry_interval}"
+                        );
 
                         // Create session ID
                         let session_id = SessionId::new(user_name.clone(), extracted_id.clone());
@@ -357,7 +366,9 @@ impl BrokerManager {
                             .build()
                             .unwrap();
 
-                        trace!("Sending CONNACK to client {extracted_id}, session_present={session_present}...");
+                        trace!(
+                            "Sending CONNACK to client {extracted_id}, session_present={session_present}..."
+                        );
                         if let Err(e) = endpoint.send(connack).await {
                             error!("Failed to send CONNACK: {e}");
                             return None;
@@ -380,15 +391,24 @@ impl BrokerManager {
 
         // Create endpoint reference
         let endpoint_arc = Arc::new(endpoint);
-        let endpoint_ref = EndpointRef::new(endpoint_arc.clone());
+        let _endpoint_ref = EndpointRef::new(endpoint_arc.clone());
 
         // Create/update session
         let session_id = SessionId::new(user_name, client_id.clone());
         let (session, _is_new) = session_store
-            .get_or_create_session(session_id.clone(), endpoint_arc.clone(), session_expiry_interval)
+            .get_or_create_session(
+                session_id.clone(),
+                endpoint_arc.clone(),
+                session_expiry_interval,
+            )
             .await;
 
-        trace!("Registered client {client_id} with session_expiry_interval={session_expiry_interval}");
+        // Create session reference
+        let session_ref = SessionRef::new(session_id.clone());
+
+        trace!(
+            "Registered client {client_id} with session_expiry_interval={session_expiry_interval}"
+        );
 
         trace!("Starting main endpoint loop for client {client_id}");
 
@@ -405,9 +425,10 @@ impl BrokerManager {
                         &packet,
                         &subscription_store,
                         &retained_store,
+                        &session_store,
                         &subscription_tx,
                         &endpoint_arc,
-                        &endpoint_ref,
+                        &session_ref,
                     )
                     .await
                     {
@@ -435,12 +456,14 @@ impl BrokerManager {
             session_store.remove_session(&session_id).await;
         } else {
             // Session should persist: mark endpoint as offline
-            trace!("Preserving session for client {client_id} (session_expiry_interval={session_expiry_interval})");
+            trace!(
+                "Preserving session for client {client_id} (session_expiry_interval={session_expiry_interval})"
+            );
             let mut session_guard = session.write().await;
             session_guard.clear_endpoint();
         }
 
-        Some(endpoint_ref)
+        Some(session_ref)
     }
 
     /// Handle received packet in endpoint task (direct processing)
@@ -449,9 +472,10 @@ impl BrokerManager {
         packet: &mqtt_ep::packet::Packet,
         subscription_store: &Arc<SubscriptionStore>,
         retained_store: &Arc<RetainedStore>,
+        session_store: &Arc<SessionStore>,
         subscription_tx: &mpsc::Sender<SubscriptionMessage>,
         endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
-        endpoint_ref: &EndpointRef,
+        session_ref: &SessionRef,
     ) -> anyhow::Result<()> {
         match packet {
             mqtt_ep::packet::Packet::V3_1_1Subscribe(sub) => {
@@ -461,7 +485,7 @@ impl BrokerManager {
                     Vec::new(),
                     subscription_tx,
                     endpoint,
-                    endpoint_ref,
+                    session_ref,
                     subscription_store,
                     retained_store,
                 )
@@ -474,7 +498,7 @@ impl BrokerManager {
                     sub.props().to_vec(),
                     subscription_tx,
                     endpoint,
-                    endpoint_ref,
+                    session_ref,
                     subscription_store,
                     retained_store,
                 )
@@ -486,7 +510,7 @@ impl BrokerManager {
                     unsub.entries(),
                     subscription_tx,
                     endpoint,
-                    endpoint_ref,
+                    session_ref,
                 )
                 .await?;
             }
@@ -496,7 +520,7 @@ impl BrokerManager {
                     unsub.entries(),
                     subscription_tx,
                     endpoint,
-                    endpoint_ref,
+                    session_ref,
                 )
                 .await?;
             }
@@ -512,6 +536,7 @@ impl BrokerManager {
                     Vec::new(),
                     subscription_store,
                     retained_store,
+                    session_store,
                 )
                 .await?;
             }
@@ -527,6 +552,7 @@ impl BrokerManager {
                     pub_packet.props().to_vec(),
                     subscription_store,
                     retained_store,
+                    session_store,
                 )
                 .await?;
             }

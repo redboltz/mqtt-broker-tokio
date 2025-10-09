@@ -6,11 +6,12 @@
 
 use super::BrokerManager;
 use crate::retained_store::RetainedStore;
+use crate::session_store::SessionStore;
 use crate::subscription_store::SubscriptionStore;
 use mqtt_endpoint_tokio::mqtt_ep;
 use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
 use std::sync::Arc;
-use tracing::{error, trace};
+use tracing::trace;
 
 impl BrokerManager {
     pub(super) async fn send_publish(
@@ -260,6 +261,7 @@ impl BrokerManager {
         publisher_props: Vec<mqtt_ep::packet::Property>,
         subscription_store: &Arc<SubscriptionStore>,
         retained_store: &Arc<RetainedStore>,
+        session_store: &Arc<SessionStore>,
     ) -> anyhow::Result<()> {
         // Convert to ArcPayload early for retained message storage
         let arc_payload = payload.into_payload();
@@ -352,20 +354,26 @@ impl BrokerManager {
                 ));
             }
 
-            // Send PUBLISH packet using the new function
-            // Clone is just Arc reference counting, very cheap
-            if let Err(e) = Self::send_publish(
-                subscription.endpoint.endpoint(),
-                topic,
-                effective_qos,
-                effective_retain,
-                false, // dup is false for new messages
-                arc_payload.clone(),
-                props,
-            )
-            .await
+            // Get session and send PUBLISH
+            if let Some(session_arc) = session_store
+                .get_session(&subscription.session_ref.session_id)
+                .await
             {
-                error!("Failed to send PUBLISH message to endpoint: {e}");
+                let mut session_guard = session_arc.write().await;
+                session_guard
+                    .send_publish(
+                        topic.to_string(),
+                        effective_qos,
+                        effective_retain,
+                        arc_payload.clone(),
+                        props,
+                    )
+                    .await;
+            } else {
+                trace!(
+                    "Session not found for subscription: {:?}",
+                    subscription.session_ref
+                );
             }
         }
 

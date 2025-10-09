@@ -22,7 +22,7 @@
 
 mod common;
 
-use common::{create_connected_endpoint, BrokerProcess};
+use common::{BrokerProcess, create_connected_endpoint};
 use mqtt_endpoint_tokio::mqtt_ep;
 
 #[tokio::test]
@@ -130,8 +130,8 @@ async fn test_retained_qos0_v3_1_1() {
         .await
         .expect("Failed to acquire packet_id");
     let sub_opts = mqtt_ep::packet::SubOpts::new().set_qos(mqtt_ep::packet::Qos::AtMostOnce);
-    let sub_entry = mqtt_ep::packet::SubEntry::new("retain/test", sub_opts)
-        .expect("Failed to create SubEntry");
+    let sub_entry =
+        mqtt_ep::packet::SubEntry::new("retain/test", sub_opts).expect("Failed to create SubEntry");
     let subscribe = mqtt_ep::packet::v3_1_1::Subscribe::builder()
         .packet_id(packet_id)
         .entries(vec![sub_entry])
@@ -289,8 +289,8 @@ async fn test_retained_qos1_v5_0() {
         .await
         .expect("Failed to acquire packet_id");
     let sub_opts = mqtt_ep::packet::SubOpts::new().set_qos(mqtt_ep::packet::Qos::AtMostOnce);
-    let sub_entry = mqtt_ep::packet::SubEntry::new("retain/qos1", sub_opts)
-        .expect("Failed to create SubEntry");
+    let sub_entry =
+        mqtt_ep::packet::SubEntry::new("retain/qos1", sub_opts).expect("Failed to create SubEntry");
     let subscribe = mqtt_ep::packet::v5_0::Subscribe::builder()
         .packet_id(packet_id)
         .entries(vec![sub_entry])
@@ -346,8 +346,8 @@ async fn test_retained_qos2_qos_arbitration_v5_0() {
         .await
         .expect("Failed to acquire packet_id");
     let sub_opts = mqtt_ep::packet::SubOpts::new().set_qos(mqtt_ep::packet::Qos::ExactlyOnce);
-    let sub_entry = mqtt_ep::packet::SubEntry::new("retain/qos2", sub_opts)
-        .expect("Failed to create SubEntry");
+    let sub_entry =
+        mqtt_ep::packet::SubEntry::new("retain/qos2", sub_opts).expect("Failed to create SubEntry");
     let subscribe = mqtt_ep::packet::v5_0::Subscribe::builder()
         .packet_id(packet_id)
         .entries(vec![sub_entry])
@@ -401,10 +401,7 @@ async fn test_retained_qos2_qos_arbitration_v5_0() {
         .reason_code(mqtt_ep::result_code::PubrelReasonCode::Success)
         .build()
         .expect("Failed to build PUBREL");
-    publisher
-        .send(pubrel)
-        .await
-        .expect("Failed to send PUBREL");
+    publisher.send(pubrel).await.expect("Failed to send PUBREL");
 
     // Receive PUBCOMP
     let packet = publisher.recv().await.expect("Failed to receive PUBCOMP");
@@ -432,7 +429,10 @@ async fn test_retained_qos2_qos_arbitration_v5_0() {
                 .reason_code(mqtt_ep::result_code::PubrecReasonCode::Success)
                 .build()
                 .expect("Failed to build PUBREC");
-            subscriber.send(pubrec).await.expect("Failed to send PUBREC");
+            subscriber
+                .send(pubrec)
+                .await
+                .expect("Failed to send PUBREC");
 
             // Receive PUBREL
             let packet = subscriber.recv().await.expect("Failed to receive PUBREL");
@@ -443,7 +443,10 @@ async fn test_retained_qos2_qos_arbitration_v5_0() {
                         .reason_code(mqtt_ep::result_code::PubcompReasonCode::Success)
                         .build()
                         .expect("Failed to build PUBCOMP");
-                    subscriber.send(pubcomp).await.expect("Failed to send PUBCOMP");
+                    subscriber
+                        .send(pubcomp)
+                        .await
+                        .expect("Failed to send PUBCOMP");
                 }
                 _ => panic!("Expected PUBREL, got {packet:?}"),
             }
@@ -462,8 +465,8 @@ async fn test_retained_qos2_qos_arbitration_v5_0() {
         .await
         .expect("Failed to acquire packet_id");
     let sub_opts = mqtt_ep::packet::SubOpts::new().set_qos(mqtt_ep::packet::Qos::AtLeastOnce);
-    let sub_entry = mqtt_ep::packet::SubEntry::new("retain/qos2", sub_opts)
-        .expect("Failed to create SubEntry");
+    let sub_entry =
+        mqtt_ep::packet::SubEntry::new("retain/qos2", sub_opts).expect("Failed to create SubEntry");
     let subscribe = mqtt_ep::packet::v5_0::Subscribe::builder()
         .packet_id(packet_id)
         .entries(vec![sub_entry])
@@ -713,11 +716,8 @@ async fn test_retained_message_clear_v5_0() {
     }
 
     // Try to receive with timeout - should NOT receive any retained message
-    let result = tokio::time::timeout(
-        tokio::time::Duration::from_millis(500),
-        subscriber.recv()
-    )
-    .await;
+    let result =
+        tokio::time::timeout(tokio::time::Duration::from_millis(500), subscriber.recv()).await;
 
     match result {
         Ok(_) => panic!("Should not receive any retained message after clearing"),
@@ -781,11 +781,8 @@ async fn test_retained_not_sent_to_shared_subscription_v5_0() {
     }
 
     // Try to receive with timeout - should NOT receive retained message for shared subscription
-    let result = tokio::time::timeout(
-        tokio::time::Duration::from_millis(500),
-        subscriber.recv()
-    )
-    .await;
+    let result =
+        tokio::time::timeout(tokio::time::Duration::from_millis(500), subscriber.recv()).await;
 
     match result {
         Ok(_) => panic!("Should not receive retained message for shared subscription"),
@@ -830,8 +827,8 @@ async fn test_retained_rh_do_not_send_v5_0() {
     let sub_opts = mqtt_ep::packet::SubOpts::new()
         .set_qos(mqtt_ep::packet::Qos::AtMostOnce)
         .set_rh(mqtt_ep::packet::RetainHandling::DoNotSendRetained);
-    let sub_entry = mqtt_ep::packet::SubEntry::new("retain/rh", sub_opts)
-        .expect("Failed to create SubEntry");
+    let sub_entry =
+        mqtt_ep::packet::SubEntry::new("retain/rh", sub_opts).expect("Failed to create SubEntry");
     let subscribe = mqtt_ep::packet::v5_0::Subscribe::builder()
         .packet_id(packet_id)
         .entries(vec![sub_entry])
@@ -851,11 +848,8 @@ async fn test_retained_rh_do_not_send_v5_0() {
     }
 
     // Try to receive with timeout - should NOT receive retained message with RH=2
-    let result = tokio::time::timeout(
-        tokio::time::Duration::from_millis(500),
-        subscriber.recv()
-    )
-    .await;
+    let result =
+        tokio::time::timeout(tokio::time::Duration::from_millis(500), subscriber.recv()).await;
 
     match result {
         Ok(_) => panic!("Should not receive retained message with RH=2"),
@@ -901,8 +895,8 @@ async fn test_retained_rh_send_on_new_subscription_v5_0() {
     let sub_opts = mqtt_ep::packet::SubOpts::new()
         .set_qos(mqtt_ep::packet::Qos::AtMostOnce)
         .set_rh(mqtt_ep::packet::RetainHandling::SendRetainedIfNotExists);
-    let sub_entry = mqtt_ep::packet::SubEntry::new("retain/rh1", sub_opts)
-        .expect("Failed to create SubEntry");
+    let sub_entry =
+        mqtt_ep::packet::SubEntry::new("retain/rh1", sub_opts).expect("Failed to create SubEntry");
     let subscribe = mqtt_ep::packet::v5_0::Subscribe::builder()
         .packet_id(packet_id)
         .entries(vec![sub_entry])
@@ -943,8 +937,8 @@ async fn test_retained_rh_send_on_new_subscription_v5_0() {
     let sub_opts = mqtt_ep::packet::SubOpts::new()
         .set_qos(mqtt_ep::packet::Qos::AtMostOnce)
         .set_rh(mqtt_ep::packet::RetainHandling::SendRetainedIfNotExists);
-    let sub_entry = mqtt_ep::packet::SubEntry::new("retain/rh1", sub_opts)
-        .expect("Failed to create SubEntry");
+    let sub_entry =
+        mqtt_ep::packet::SubEntry::new("retain/rh1", sub_opts).expect("Failed to create SubEntry");
     let subscribe = mqtt_ep::packet::v5_0::Subscribe::builder()
         .packet_id(packet_id)
         .entries(vec![sub_entry])
@@ -964,11 +958,8 @@ async fn test_retained_rh_send_on_new_subscription_v5_0() {
     }
 
     // Try to receive with timeout - should NOT receive retained message on re-subscription
-    let result = tokio::time::timeout(
-        tokio::time::Duration::from_millis(500),
-        subscriber.recv()
-    )
-    .await;
+    let result =
+        tokio::time::timeout(tokio::time::Duration::from_millis(500), subscriber.recv()).await;
 
     match result {
         Ok(_) => panic!("Should not receive retained message on re-subscription with RH=1"),
@@ -993,8 +984,8 @@ async fn test_rap_false_v5_0() {
     let sub_opts = mqtt_ep::packet::SubOpts::new()
         .set_qos(mqtt_ep::packet::Qos::AtMostOnce)
         .set_rap(false); // RAP=false: retain flag should be cleared when forwarding
-    let sub_entry = mqtt_ep::packet::SubEntry::new("test/rap", sub_opts)
-        .expect("Failed to create SubEntry");
+    let sub_entry =
+        mqtt_ep::packet::SubEntry::new("test/rap", sub_opts).expect("Failed to create SubEntry");
     let subscribe = mqtt_ep::packet::v5_0::Subscribe::builder()
         .packet_id(packet_id)
         .entries(vec![sub_entry])
@@ -1031,10 +1022,7 @@ async fn test_rap_false_v5_0() {
         .expect("Failed to send PUBLISH");
 
     // Subscriber should receive message with retain=false (because RAP=false)
-    let packet = subscriber
-        .recv()
-        .await
-        .expect("Failed to receive PUBLISH");
+    let packet = subscriber.recv().await.expect("Failed to receive PUBLISH");
     match packet {
         mqtt_ep::packet::Packet::V5_0Publish(publish) => {
             assert_eq!(publish.topic_name(), "test/rap");
@@ -1098,10 +1086,7 @@ async fn test_rap_true_v5_0() {
         .expect("Failed to send PUBLISH");
 
     // Subscriber should receive message with retain=true (because RAP=true)
-    let packet = subscriber
-        .recv()
-        .await
-        .expect("Failed to receive PUBLISH");
+    let packet = subscriber.recv().await.expect("Failed to receive PUBLISH");
     match packet {
         mqtt_ep::packet::Packet::V5_0Publish(publish) => {
             assert_eq!(publish.topic_name(), "test/rap/true");
@@ -1153,8 +1138,8 @@ async fn test_retained_wildcard_single_entry_v5_0() {
     let sub_opts = mqtt_ep::packet::SubOpts::new()
         .set_qos(mqtt_ep::packet::Qos::AtMostOnce)
         .set_rap(false);
-    let sub_entry = mqtt_ep::packet::SubEntry::new("sensor/#", sub_opts)
-        .expect("Failed to create SubEntry");
+    let sub_entry =
+        mqtt_ep::packet::SubEntry::new("sensor/#", sub_opts).expect("Failed to create SubEntry");
     let subscribe = mqtt_ep::packet::v5_0::Subscribe::builder()
         .packet_id(packet_id)
         .entries(vec![sub_entry])
@@ -1176,10 +1161,7 @@ async fn test_retained_wildcard_single_entry_v5_0() {
     // Subscriber should receive all 3 retained messages
     let mut received_topics = std::collections::HashSet::new();
     for _ in 0..3 {
-        let packet = subscriber
-            .recv()
-            .await
-            .expect("Failed to receive PUBLISH");
+        let packet = subscriber.recv().await.expect("Failed to receive PUBLISH");
         match packet {
             mqtt_ep::packet::Packet::V5_0Publish(publish) => {
                 assert_eq!(publish.retain(), true);
@@ -1242,13 +1224,14 @@ async fn test_retained_wildcard_multiple_entries_v5_0() {
     let sub_opts = mqtt_ep::packet::SubOpts::new()
         .set_qos(mqtt_ep::packet::Qos::AtMostOnce)
         .set_rap(false);
-    
+
     // Subscribe to two different wildcard patterns in one SUBSCRIBE packet
     let entries = vec![
         mqtt_ep::packet::SubEntry::new("home/#", sub_opts).expect("Failed to create SubEntry"),
-        mqtt_ep::packet::SubEntry::new("office/desk/+", sub_opts).expect("Failed to create SubEntry"),
+        mqtt_ep::packet::SubEntry::new("office/desk/+", sub_opts)
+            .expect("Failed to create SubEntry"),
     ];
-    
+
     let subscribe = mqtt_ep::packet::v5_0::Subscribe::builder()
         .packet_id(packet_id)
         .entries(entries)
@@ -1275,10 +1258,7 @@ async fn test_retained_wildcard_multiple_entries_v5_0() {
     // Total: 5 messages
     let mut received_topics = std::collections::HashSet::new();
     for _ in 0..5 {
-        let packet = subscriber
-            .recv()
-            .await
-            .expect("Failed to receive PUBLISH");
+        let packet = subscriber.recv().await.expect("Failed to receive PUBLISH");
         match packet {
             mqtt_ep::packet::Packet::V5_0Publish(publish) => {
                 assert_eq!(publish.retain(), true);

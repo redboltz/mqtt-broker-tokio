@@ -35,375 +35,391 @@ fn create_mock_endpoint() -> EndpointRef {
     let endpoint = mqtt_ep::Endpoint::<mqtt_ep::role::Server>::new(mqtt_ep::Version::V5_0);
     EndpointRef::new(Arc::new(endpoint))
 }
-    #[tokio::test]
-    async fn test_same_endpoint_multiple_subscriptions() {
-        let store = SubscriptionStore::new();
-        let endpoint = create_mock_endpoint();
+#[tokio::test]
+async fn test_same_endpoint_multiple_subscriptions() {
+    let store = SubscriptionStore::new();
+    let endpoint = create_mock_endpoint();
 
-        // Same endpoint subscribes to multiple patterns that match the same topic
-        store
-            .subscribe(
-                endpoint.clone(),
-                "a/b",
-                mqtt_ep::packet::Qos::AtMostOnce,
-                Some(1), false,
-            )
-            .await
-            .unwrap();
-        store
-            .subscribe(
-                endpoint.clone(),
-                "a/+",
-                mqtt_ep::packet::Qos::AtLeastOnce,
-                Some(2), false,
-            )
-            .await
-            .unwrap();
-        store
-            .subscribe(
-                endpoint.clone(),
-                "a/#",
-                mqtt_ep::packet::Qos::ExactlyOnce,
-                Some(3), false,
-            )
-            .await
-            .unwrap();
+    // Same endpoint subscribes to multiple patterns that match the same topic
+    store
+        .subscribe(
+            endpoint.clone(),
+            "a/b",
+            mqtt_ep::packet::Qos::AtMostOnce,
+            Some(1),
+            false,
+        )
+        .await
+        .unwrap();
+    store
+        .subscribe(
+            endpoint.clone(),
+            "a/+",
+            mqtt_ep::packet::Qos::AtLeastOnce,
+            Some(2),
+            false,
+        )
+        .await
+        .unwrap();
+    store
+        .subscribe(
+            endpoint.clone(),
+            "a/#",
+            mqtt_ep::packet::Qos::ExactlyOnce,
+            Some(3),
+            false,
+        )
+        .await
+        .unwrap();
 
-        let subscriptions = store.find_subscribers("a/b").await;
+    let subscriptions = store.find_subscribers("a/b").await;
 
-        // Should get 3 subscriptions for the same endpoint
-        assert_eq!(subscriptions.len(), 3);
+    // Should get 3 subscriptions for the same endpoint
+    assert_eq!(subscriptions.len(), 3);
 
-        // Verify all subscriptions are for the same endpoint but different topic filters
-        let topic_filters: Vec<String> = subscriptions
-            .iter()
-            .map(|s| s.topic_filter.clone())
-            .collect();
-        assert!(topic_filters.contains(&"a/b".to_string()));
-        assert!(topic_filters.contains(&"a/+".to_string()));
-        assert!(topic_filters.contains(&"a/#".to_string()));
+    // Verify all subscriptions are for the same endpoint but different topic filters
+    let topic_filters: Vec<String> = subscriptions
+        .iter()
+        .map(|s| s.topic_filter.clone())
+        .collect();
+    assert!(topic_filters.contains(&"a/b".to_string()));
+    assert!(topic_filters.contains(&"a/+".to_string()));
+    assert!(topic_filters.contains(&"a/#".to_string()));
 
-        // Verify QoS and sub_id values
-        for sub in &subscriptions {
-            match sub.topic_filter.as_str() {
-                "a/b" => {
-                    assert_eq!(sub.qos, mqtt_ep::packet::Qos::AtMostOnce);
-                    assert_eq!(sub.sub_id, Some(1));
-                }
-                "a/+" => {
-                    assert_eq!(sub.qos, mqtt_ep::packet::Qos::AtLeastOnce);
-                    assert_eq!(sub.sub_id, Some(2));
-                }
-                "a/#" => {
-                    assert_eq!(sub.qos, mqtt_ep::packet::Qos::ExactlyOnce);
-                    assert_eq!(sub.sub_id, Some(3));
-                }
-                _ => panic!("Unexpected topic filter: {}", sub.topic_filter),
+    // Verify QoS and sub_id values
+    for sub in &subscriptions {
+        match sub.topic_filter.as_str() {
+            "a/b" => {
+                assert_eq!(sub.qos, mqtt_ep::packet::Qos::AtMostOnce);
+                assert_eq!(sub.sub_id, Some(1));
             }
+            "a/+" => {
+                assert_eq!(sub.qos, mqtt_ep::packet::Qos::AtLeastOnce);
+                assert_eq!(sub.sub_id, Some(2));
+            }
+            "a/#" => {
+                assert_eq!(sub.qos, mqtt_ep::packet::Qos::ExactlyOnce);
+                assert_eq!(sub.sub_id, Some(3));
+            }
+            _ => panic!("Unexpected topic filter: {}", sub.topic_filter),
         }
     }
+}
 
-    #[tokio::test]
-    async fn test_qos_and_sub_id_overwrite() {
-        let store = SubscriptionStore::new();
-        let endpoint = create_mock_endpoint();
+#[tokio::test]
+async fn test_qos_and_sub_id_overwrite() {
+    let store = SubscriptionStore::new();
+    let endpoint = create_mock_endpoint();
 
-        // Subscribe with initial values
-        store
-            .subscribe(
-                endpoint.clone(),
-                "test/topic",
-                mqtt_ep::packet::Qos::AtMostOnce,
-                Some(100), false,
-            )
-            .await
-            .unwrap();
+    // Subscribe with initial values
+    store
+        .subscribe(
+            endpoint.clone(),
+            "test/topic",
+            mqtt_ep::packet::Qos::AtMostOnce,
+            Some(100),
+            false,
+        )
+        .await
+        .unwrap();
 
-        let subscriptions = store.find_subscribers("test/topic").await;
-        assert_eq!(subscriptions.len(), 1);
-        assert_eq!(subscriptions[0].qos, mqtt_ep::packet::Qos::AtMostOnce);
-        assert_eq!(subscriptions[0].sub_id, Some(100));
+    let subscriptions = store.find_subscribers("test/topic").await;
+    assert_eq!(subscriptions.len(), 1);
+    assert_eq!(subscriptions[0].qos, mqtt_ep::packet::Qos::AtMostOnce);
+    assert_eq!(subscriptions[0].sub_id, Some(100));
 
-        // Subscribe again with different QoS and sub_id (should overwrite)
-        store
-            .subscribe(
-                endpoint.clone(),
-                "test/topic",
-                mqtt_ep::packet::Qos::ExactlyOnce,
-                Some(200), false,
-            )
-            .await
-            .unwrap();
+    // Subscribe again with different QoS and sub_id (should overwrite)
+    store
+        .subscribe(
+            endpoint.clone(),
+            "test/topic",
+            mqtt_ep::packet::Qos::ExactlyOnce,
+            Some(200),
+            false,
+        )
+        .await
+        .unwrap();
 
-        let subscriptions = store.find_subscribers("test/topic").await;
-        assert_eq!(subscriptions.len(), 1); // Still only one subscription
-        assert_eq!(subscriptions[0].qos, mqtt_ep::packet::Qos::ExactlyOnce);
-        assert_eq!(subscriptions[0].sub_id, Some(200));
-    }
+    let subscriptions = store.find_subscribers("test/topic").await;
+    assert_eq!(subscriptions.len(), 1); // Still only one subscription
+    assert_eq!(subscriptions[0].qos, mqtt_ep::packet::Qos::ExactlyOnce);
+    assert_eq!(subscriptions[0].sub_id, Some(200));
+}
 
-    #[tokio::test]
-    async fn test_partial_unsubscribe() {
-        let store = SubscriptionStore::new();
-        let endpoint = create_mock_endpoint();
+#[tokio::test]
+async fn test_partial_unsubscribe() {
+    let store = SubscriptionStore::new();
+    let endpoint = create_mock_endpoint();
 
-        // Subscribe to multiple patterns
-        store
-            .subscribe(
-                endpoint.clone(),
-                "sensor/+/temperature",
-                mqtt_ep::packet::Qos::AtMostOnce,
-                Some(1), false,
-            )
-            .await
-            .unwrap();
-        store
-            .subscribe(
-                endpoint.clone(),
-                "sensor/#",
-                mqtt_ep::packet::Qos::AtLeastOnce,
-                Some(2), false,
-            )
-            .await
-            .unwrap();
-        store
-            .subscribe(
-                endpoint.clone(),
-                "sensor/room1/temperature",
-                mqtt_ep::packet::Qos::ExactlyOnce,
-                Some(3), false,
-            )
-            .await
-            .unwrap();
+    // Subscribe to multiple patterns
+    store
+        .subscribe(
+            endpoint.clone(),
+            "sensor/+/temperature",
+            mqtt_ep::packet::Qos::AtMostOnce,
+            Some(1),
+            false,
+        )
+        .await
+        .unwrap();
+    store
+        .subscribe(
+            endpoint.clone(),
+            "sensor/#",
+            mqtt_ep::packet::Qos::AtLeastOnce,
+            Some(2),
+            false,
+        )
+        .await
+        .unwrap();
+    store
+        .subscribe(
+            endpoint.clone(),
+            "sensor/room1/temperature",
+            mqtt_ep::packet::Qos::ExactlyOnce,
+            Some(3),
+            false,
+        )
+        .await
+        .unwrap();
 
-        // Verify all match
-        let subscriptions = store.find_subscribers("sensor/room1/temperature").await;
-        assert_eq!(subscriptions.len(), 3);
+    // Verify all match
+    let subscriptions = store.find_subscribers("sensor/room1/temperature").await;
+    assert_eq!(subscriptions.len(), 3);
 
-        // Unsubscribe from one pattern
-        let removed = store
-            .unsubscribe(&endpoint, "sensor/+/temperature")
-            .await
-            .unwrap();
-        assert!(removed);
+    // Unsubscribe from one pattern
+    let removed = store
+        .unsubscribe(&endpoint, "sensor/+/temperature")
+        .await
+        .unwrap();
+    assert!(removed);
 
-        // Verify only the unsubscribed pattern is removed
-        let subscriptions = store.find_subscribers("sensor/room1/temperature").await;
-        assert_eq!(subscriptions.len(), 2);
+    // Verify only the unsubscribed pattern is removed
+    let subscriptions = store.find_subscribers("sensor/room1/temperature").await;
+    assert_eq!(subscriptions.len(), 2);
 
-        let topic_filters: Vec<String> = subscriptions
-            .iter()
-            .map(|s| s.topic_filter.clone())
-            .collect();
-        assert!(!topic_filters.contains(&"sensor/+/temperature".to_string()));
-        assert!(topic_filters.contains(&"sensor/#".to_string()));
-        assert!(topic_filters.contains(&"sensor/room1/temperature".to_string()));
-    }
+    let topic_filters: Vec<String> = subscriptions
+        .iter()
+        .map(|s| s.topic_filter.clone())
+        .collect();
+    assert!(!topic_filters.contains(&"sensor/+/temperature".to_string()));
+    assert!(topic_filters.contains(&"sensor/#".to_string()));
+    assert!(topic_filters.contains(&"sensor/room1/temperature".to_string()));
+}
 
-    #[tokio::test]
-    async fn test_complex_wildcard_patterns() {
-        let store = SubscriptionStore::new();
-        let endpoint = create_mock_endpoint();
+#[tokio::test]
+async fn test_complex_wildcard_patterns() {
+    let store = SubscriptionStore::new();
+    let endpoint = create_mock_endpoint();
 
-        // Subscribe to complex pattern: a/+/c/+/e
-        store
-            .subscribe(
-                endpoint.clone(),
-                "a/+/c/+/e",
-                mqtt_ep::packet::Qos::AtMostOnce,
-                Some(1), false,
-            )
-            .await
-            .unwrap();
+    // Subscribe to complex pattern: a/+/c/+/e
+    store
+        .subscribe(
+            endpoint.clone(),
+            "a/+/c/+/e",
+            mqtt_ep::packet::Qos::AtMostOnce,
+            Some(1),
+            false,
+        )
+        .await
+        .unwrap();
 
-        // Should match
-        let subscriptions = store.find_subscribers("a/b/c/d/e").await;
-        assert_eq!(subscriptions.len(), 1);
+    // Should match
+    let subscriptions = store.find_subscribers("a/b/c/d/e").await;
+    assert_eq!(subscriptions.len(), 1);
 
-        let subscriptions = store.find_subscribers("a/x/c/y/e").await;
-        assert_eq!(subscriptions.len(), 1);
+    let subscriptions = store.find_subscribers("a/x/c/y/e").await;
+    assert_eq!(subscriptions.len(), 1);
 
-        // Should not match
-        let subscriptions = store.find_subscribers("a/b/c/d").await; // Missing 'e'
-        assert_eq!(subscriptions.len(), 0);
+    // Should not match
+    let subscriptions = store.find_subscribers("a/b/c/d").await; // Missing 'e'
+    assert_eq!(subscriptions.len(), 0);
 
-        let subscriptions = store.find_subscribers("a/b/c/d/e/f").await; // Too deep
-        assert_eq!(subscriptions.len(), 0);
+    let subscriptions = store.find_subscribers("a/b/c/d/e/f").await; // Too deep
+    assert_eq!(subscriptions.len(), 0);
 
-        let subscriptions = store.find_subscribers("a/b/x/d/e").await; // Wrong middle segment
-        assert_eq!(subscriptions.len(), 0);
-    }
+    let subscriptions = store.find_subscribers("a/b/x/d/e").await; // Wrong middle segment
+    assert_eq!(subscriptions.len(), 0);
+}
 
-    #[tokio::test]
-    async fn test_mixed_wildcard_pattern() {
-        let store = SubscriptionStore::new();
-        let endpoint = create_mock_endpoint();
+#[tokio::test]
+async fn test_mixed_wildcard_pattern() {
+    let store = SubscriptionStore::new();
+    let endpoint = create_mock_endpoint();
 
-        // Subscribe to mixed pattern: a/+/#
-        store
-            .subscribe(
-                endpoint.clone(),
-                "a/+/#",
-                mqtt_ep::packet::Qos::AtMostOnce,
-                Some(1), false,
-            )
-            .await
-            .unwrap();
+    // Subscribe to mixed pattern: a/+/#
+    store
+        .subscribe(
+            endpoint.clone(),
+            "a/+/#",
+            mqtt_ep::packet::Qos::AtMostOnce,
+            Some(1),
+            false,
+        )
+        .await
+        .unwrap();
 
-        // Should NOT match "a/b" (no trailing slash, # needs at least one more level)
-        let subscriptions = store.find_subscribers("a/b").await;
-        assert_eq!(subscriptions.len(), 0);
+    // Should NOT match "a/b" (no trailing slash, # needs at least one more level)
+    let subscriptions = store.find_subscribers("a/b").await;
+    assert_eq!(subscriptions.len(), 0);
 
-        // Should match "a/b/" (with trailing level)
-        let subscriptions = store.find_subscribers("a/b/").await;
-        assert_eq!(subscriptions.len(), 1);
+    // Should match "a/b/" (with trailing level)
+    let subscriptions = store.find_subscribers("a/b/").await;
+    assert_eq!(subscriptions.len(), 1);
 
-        // Should match "a/b/c"
-        let subscriptions = store.find_subscribers("a/b/c").await;
-        assert_eq!(subscriptions.len(), 1);
+    // Should match "a/b/c"
+    let subscriptions = store.find_subscribers("a/b/c").await;
+    assert_eq!(subscriptions.len(), 1);
 
-        // Should match "a/b/c/d/e/f"
-        let subscriptions = store.find_subscribers("a/b/c/d/e/f").await;
-        assert_eq!(subscriptions.len(), 1);
+    // Should match "a/b/c/d/e/f"
+    let subscriptions = store.find_subscribers("a/b/c/d/e/f").await;
+    assert_eq!(subscriptions.len(), 1);
 
-        // Should NOT match "a" (needs the + level)
-        let subscriptions = store.find_subscribers("a").await;
-        assert_eq!(subscriptions.len(), 0);
+    // Should NOT match "a" (needs the + level)
+    let subscriptions = store.find_subscribers("a").await;
+    assert_eq!(subscriptions.len(), 0);
 
-        // Should NOT match "b/x/y" (wrong prefix)
-        let subscriptions = store.find_subscribers("b/x/y").await;
-        assert_eq!(subscriptions.len(), 0);
-    }
+    // Should NOT match "b/x/y" (wrong prefix)
+    let subscriptions = store.find_subscribers("b/x/y").await;
+    assert_eq!(subscriptions.len(), 0);
+}
 
-    #[tokio::test]
-    async fn test_root_multilevel_wildcard() {
-        let store = SubscriptionStore::new();
-        let endpoint = create_mock_endpoint();
+#[tokio::test]
+async fn test_root_multilevel_wildcard() {
+    let store = SubscriptionStore::new();
+    let endpoint = create_mock_endpoint();
 
-        // Subscribe to root multilevel wildcard
-        store
-            .subscribe(
-                endpoint.clone(),
-                "#",
-                mqtt_ep::packet::Qos::AtMostOnce,
-                Some(1), false,
-            )
-            .await
-            .unwrap();
+    // Subscribe to root multilevel wildcard
+    store
+        .subscribe(
+            endpoint.clone(),
+            "#",
+            mqtt_ep::packet::Qos::AtMostOnce,
+            Some(1),
+            false,
+        )
+        .await
+        .unwrap();
 
-        // Should match everything
-        let subscriptions = store.find_subscribers("a").await;
-        assert_eq!(subscriptions.len(), 1);
+    // Should match everything
+    let subscriptions = store.find_subscribers("a").await;
+    assert_eq!(subscriptions.len(), 1);
 
-        let subscriptions = store.find_subscribers("a/b/c/d").await;
-        assert_eq!(subscriptions.len(), 1);
+    let subscriptions = store.find_subscribers("a/b/c/d").await;
+    assert_eq!(subscriptions.len(), 1);
 
-        let subscriptions = store.find_subscribers("sensor/room1/temperature").await;
-        assert_eq!(subscriptions.len(), 1);
-    }
+    let subscriptions = store.find_subscribers("sensor/room1/temperature").await;
+    assert_eq!(subscriptions.len(), 1);
+}
 
-    #[tokio::test]
-    async fn test_empty_segment_handling() {
-        let store = SubscriptionStore::new();
-        let endpoint = create_mock_endpoint();
+#[tokio::test]
+async fn test_empty_segment_handling() {
+    let store = SubscriptionStore::new();
+    let endpoint = create_mock_endpoint();
 
-        // Subscribe to pattern with empty segments
-        store
-            .subscribe(
-                endpoint.clone(),
-                "a//b",
-                mqtt_ep::packet::Qos::AtMostOnce,
-                Some(1), false,
-            )
-            .await
-            .unwrap();
-        store
-            .subscribe(
-                endpoint.clone(),
-                "a/+/b",
-                mqtt_ep::packet::Qos::AtLeastOnce,
-                Some(2), false,
-            )
-            .await
-            .unwrap();
+    // Subscribe to pattern with empty segments
+    store
+        .subscribe(
+            endpoint.clone(),
+            "a//b",
+            mqtt_ep::packet::Qos::AtMostOnce,
+            Some(1),
+            false,
+        )
+        .await
+        .unwrap();
+    store
+        .subscribe(
+            endpoint.clone(),
+            "a/+/b",
+            mqtt_ep::packet::Qos::AtLeastOnce,
+            Some(2),
+            false,
+        )
+        .await
+        .unwrap();
 
-        // Should match exactly
-        let subscriptions = store.find_subscribers("a//b").await;
-        assert_eq!(subscriptions.len(), 2); // Both patterns should match
+    // Should match exactly
+    let subscriptions = store.find_subscribers("a//b").await;
+    assert_eq!(subscriptions.len(), 2); // Both patterns should match
 
-        // The + should match empty segment
-        let topic_filters: Vec<String> = subscriptions
-            .iter()
-            .map(|s| s.topic_filter.clone())
-            .collect();
-        assert!(topic_filters.contains(&"a//b".to_string()));
-        assert!(topic_filters.contains(&"a/+/b".to_string()));
-    }
+    // The + should match empty segment
+    let topic_filters: Vec<String> = subscriptions
+        .iter()
+        .map(|s| s.topic_filter.clone())
+        .collect();
+    assert!(topic_filters.contains(&"a//b".to_string()));
+    assert!(topic_filters.contains(&"a/+/b".to_string()));
+}
 
-    #[tokio::test]
-    async fn test_multiple_endpoints_same_pattern() {
-        let store = SubscriptionStore::new();
-        let endpoint1 = create_mock_endpoint();
-        let endpoint2 = create_mock_endpoint();
+#[tokio::test]
+async fn test_multiple_endpoints_same_pattern() {
+    let store = SubscriptionStore::new();
+    let endpoint1 = create_mock_endpoint();
+    let endpoint2 = create_mock_endpoint();
 
-        // Different endpoints subscribe to same pattern
-        store
-            .subscribe(
-                endpoint1.clone(),
-                "test/topic",
-                mqtt_ep::packet::Qos::AtMostOnce,
-                Some(1), false,
-            )
-            .await
-            .unwrap();
-        store
-            .subscribe(
-                endpoint2.clone(),
-                "test/topic",
-                mqtt_ep::packet::Qos::AtLeastOnce,
-                Some(2), false,
-            )
-            .await
-            .unwrap();
+    // Different endpoints subscribe to same pattern
+    store
+        .subscribe(
+            endpoint1.clone(),
+            "test/topic",
+            mqtt_ep::packet::Qos::AtMostOnce,
+            Some(1),
+            false,
+        )
+        .await
+        .unwrap();
+    store
+        .subscribe(
+            endpoint2.clone(),
+            "test/topic",
+            mqtt_ep::packet::Qos::AtLeastOnce,
+            Some(2),
+            false,
+        )
+        .await
+        .unwrap();
 
-        let subscriptions = store.find_subscribers("test/topic").await;
-        assert_eq!(subscriptions.len(), 2);
+    let subscriptions = store.find_subscribers("test/topic").await;
+    assert_eq!(subscriptions.len(), 2);
 
-        // Verify different endpoints
-        let endpoints: Vec<_> = subscriptions.iter().map(|s| &s.endpoint).collect();
-        assert!(endpoints.contains(&&endpoint1));
-        assert!(endpoints.contains(&&endpoint2));
-    }
+    // Verify different endpoints
+    let endpoints: Vec<_> = subscriptions.iter().map(|s| &s.endpoint).collect();
+    assert!(endpoints.contains(&&endpoint1));
+    assert!(endpoints.contains(&&endpoint2));
+}
 
-    #[tokio::test]
-    async fn test_unsubscribe_nonexistent() {
-        let store = SubscriptionStore::new();
-        let endpoint = create_mock_endpoint();
+#[tokio::test]
+async fn test_unsubscribe_nonexistent() {
+    let store = SubscriptionStore::new();
+    let endpoint = create_mock_endpoint();
 
-        // Try to unsubscribe from non-existent subscription
-        let removed = store
-            .unsubscribe(&endpoint, "nonexistent/topic")
-            .await
-            .unwrap();
-        assert!(!removed);
-    }
+    // Try to unsubscribe from non-existent subscription
+    let removed = store
+        .unsubscribe(&endpoint, "nonexistent/topic")
+        .await
+        .unwrap();
+    assert!(!removed);
+}
 
-    #[tokio::test]
-    async fn test_subscription_with_none_sub_id() {
-        let store = SubscriptionStore::new();
-        let endpoint = create_mock_endpoint();
+#[tokio::test]
+async fn test_subscription_with_none_sub_id() {
+    let store = SubscriptionStore::new();
+    let endpoint = create_mock_endpoint();
 
-        // Subscribe with None sub_id (v3.1.1 style)
-        store
-            .subscribe(
-                endpoint.clone(),
-                "test/topic",
-                mqtt_ep::packet::Qos::AtMostOnce,
-                None, false,
-            )
-            .await
-            .unwrap();
+    // Subscribe with None sub_id (v3.1.1 style)
+    store
+        .subscribe(
+            endpoint.clone(),
+            "test/topic",
+            mqtt_ep::packet::Qos::AtMostOnce,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
 
-        let subscriptions = store.find_subscribers("test/topic").await;
-        assert_eq!(subscriptions.len(), 1);
-        assert_eq!(subscriptions[0].sub_id, None);
-    }
+    let subscriptions = store.find_subscribers("test/topic").await;
+    assert_eq!(subscriptions.len(), 1);
+    assert_eq!(subscriptions[0].sub_id, None);
+}

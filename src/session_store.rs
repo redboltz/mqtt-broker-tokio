@@ -48,7 +48,7 @@ pub struct OfflineMessage {
     pub topic_name: String,
     pub qos: mqtt_ep::packet::Qos,
     pub retain: bool,
-    pub payload: Vec<u8>,
+    pub payload: mqtt_ep::common::ArcPayload,
     pub props: Vec<mqtt_ep::packet::Property>,
 }
 
@@ -124,10 +124,16 @@ impl Session {
     /// Add offline message
     pub fn add_offline_message(&mut self, message: OfflineMessage) {
         // Only store QoS1/QoS2 messages
-        if matches!(message.qos, mqtt_ep::packet::Qos::AtLeastOnce | mqtt_ep::packet::Qos::ExactlyOnce) {
+        if matches!(
+            message.qos,
+            mqtt_ep::packet::Qos::AtLeastOnce | mqtt_ep::packet::Qos::ExactlyOnce
+        ) {
             self.offline_messages.push(message);
-            trace!("Added offline message for session {:?}, total: {}",
-                   self.session_id, self.offline_messages.len());
+            trace!(
+                "Added offline message for session {:?}, total: {}",
+                self.session_id,
+                self.offline_messages.len()
+            );
         }
     }
 
@@ -154,6 +160,80 @@ impl Session {
     pub fn clear_expiry_timer(&mut self) {
         if let Some(timer) = self.expiry_timer.take() {
             timer.abort();
+        }
+    }
+
+    /// Send PUBLISH to session (online) or store offline message (offline)
+    pub async fn send_publish(
+        &mut self,
+        topic_name: String,
+        qos: mqtt_ep::packet::Qos,
+        retain: bool,
+        payload: mqtt_ep::common::ArcPayload,
+        props: Vec<mqtt_ep::packet::Property>,
+    ) {
+        if let Some(endpoint) = &self.endpoint {
+            // Online: send message directly
+            // Get endpoint version to build appropriate PUBLISH packet
+            let endpoint_version = endpoint
+                .get_protocol_version()
+                .await
+                .unwrap_or(mqtt_ep::Version::V5_0);
+
+            match endpoint_version {
+                mqtt_ep::Version::V3_1_1 => {
+                    let publish = mqtt_ep::packet::v3_1_1::Publish::builder()
+                        .topic_name(&topic_name)
+                        .expect("Failed to set topic_name")
+                        .qos(qos)
+                        .retain(retain)
+                        .payload(payload.clone())
+                        .build()
+                        .expect("Failed to build PUBLISH");
+
+                    if let Err(e) = endpoint.send(publish).await {
+                        debug!(
+                            "Failed to send PUBLISH to session {:?}: {e}",
+                            self.session_id
+                        );
+                    }
+                }
+                mqtt_ep::Version::V5_0 => {
+                    let publish = mqtt_ep::packet::v5_0::Publish::builder()
+                        .topic_name(&topic_name)
+                        .expect("Failed to set topic_name")
+                        .qos(qos)
+                        .retain(retain)
+                        .payload(payload.clone())
+                        .props(props.clone())
+                        .build()
+                        .expect("Failed to build PUBLISH");
+
+                    if let Err(e) = endpoint.send(publish).await {
+                        debug!(
+                            "Failed to send PUBLISH to session {:?}: {e}",
+                            self.session_id
+                        );
+                    }
+                }
+                _ => {
+                    debug!("Unsupported MQTT version for session {:?}", self.session_id);
+                }
+            }
+        } else {
+            // Offline: store message for QoS1/QoS2
+            if matches!(
+                qos,
+                mqtt_ep::packet::Qos::AtLeastOnce | mqtt_ep::packet::Qos::ExactlyOnce
+            ) {
+                self.add_offline_message(OfflineMessage {
+                    topic_name,
+                    qos,
+                    retain,
+                    payload,
+                    props,
+                });
+            }
         }
     }
 }

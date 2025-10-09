@@ -22,7 +22,7 @@
 
 mod common;
 
-use common::{create_connected_endpoint, BrokerProcess};
+use common::{BrokerProcess, create_connected_endpoint};
 use mqtt_endpoint_tokio::mqtt_ep;
 use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
 
@@ -1068,8 +1068,8 @@ async fn test_pubsub_multiple_subscriptions_with_sub_id_v5_0() {
         .await
         .expect("Failed to acquire packet_id");
     let sub_opts = mqtt_ep::packet::SubOpts::new().set_qos(mqtt_ep::packet::Qos::AtMostOnce);
-    let sub_entry = mqtt_ep::packet::SubEntry::new("a/b/c", sub_opts)
-        .expect("Failed to create SubEntry");
+    let sub_entry =
+        mqtt_ep::packet::SubEntry::new("a/b/c", sub_opts).expect("Failed to create SubEntry");
     let subscribe = mqtt_ep::packet::v5_0::Subscribe::builder()
         .packet_id(packet_id)
         .entries(vec![sub_entry])
@@ -1094,8 +1094,8 @@ async fn test_pubsub_multiple_subscriptions_with_sub_id_v5_0() {
         .await
         .expect("Failed to acquire packet_id");
     let sub_opts = mqtt_ep::packet::SubOpts::new().set_qos(mqtt_ep::packet::Qos::AtMostOnce);
-    let sub_entry = mqtt_ep::packet::SubEntry::new("a/+/c", sub_opts)
-        .expect("Failed to create SubEntry");
+    let sub_entry =
+        mqtt_ep::packet::SubEntry::new("a/+/c", sub_opts).expect("Failed to create SubEntry");
     let subscribe = mqtt_ep::packet::v5_0::Subscribe::builder()
         .packet_id(packet_id)
         .entries(vec![sub_entry])
@@ -1123,8 +1123,8 @@ async fn test_pubsub_multiple_subscriptions_with_sub_id_v5_0() {
         .await
         .expect("Failed to acquire packet_id");
     let sub_opts = mqtt_ep::packet::SubOpts::new().set_qos(mqtt_ep::packet::Qos::AtMostOnce);
-    let sub_entry = mqtt_ep::packet::SubEntry::new("a/#", sub_opts)
-        .expect("Failed to create SubEntry");
+    let sub_entry =
+        mqtt_ep::packet::SubEntry::new("a/#", sub_opts).expect("Failed to create SubEntry");
     let subscribe = mqtt_ep::packet::v5_0::Subscribe::builder()
         .packet_id(packet_id)
         .entries(vec![sub_entry])
@@ -1165,21 +1165,18 @@ async fn test_pubsub_multiple_subscriptions_with_sub_id_v5_0() {
     // Subscriber should receive 3 PUBLISH messages (one for each matching subscription)
     let mut received_messages = Vec::new();
     for _ in 0..3 {
-        let packet = subscriber
-            .recv()
-            .await
-            .expect("Failed to receive PUBLISH");
+        let packet = subscriber.recv().await.expect("Failed to receive PUBLISH");
         match packet {
             mqtt_ep::packet::Packet::V5_0Publish(publish) => {
                 assert_eq!(publish.topic_name(), "a/b/c");
                 assert_eq!(publish.payload().as_slice(), b"test message");
-                
+
                 // Extract subscription identifier from properties
                 let sub_id = publish.props().iter().find_map(|prop| match prop {
                     mqtt_ep::packet::Property::SubscriptionIdentifier(_) => prop.as_u32(),
                     _ => None,
                 });
-                
+
                 received_messages.push(sub_id);
             }
             _ => panic!("Expected PUBLISH, got {packet:?}"),
@@ -1189,7 +1186,7 @@ async fn test_pubsub_multiple_subscriptions_with_sub_id_v5_0() {
     // Verify that we received messages with the correct subscription identifiers
     // Sort the received sub_ids for easier comparison
     received_messages.sort();
-    
+
     // Expected: None (no sub_id), Some(1), Some(2)
     assert_eq!(received_messages.len(), 3);
     assert_eq!(received_messages[0], None); // First subscription had no sub_id

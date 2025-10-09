@@ -27,6 +27,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::trace;
 
+use crate::session_store::SessionRef;
+
 /// Simple error type for subscription operations
 #[derive(Debug, Clone)]
 pub enum SubscriptionError {
@@ -45,10 +47,10 @@ impl std::error::Error for SubscriptionError {}
 
 pub type ClientId = String;
 
-/// Subscription information containing endpoint, QoS, topic filter, subscription ID, and RAP flag
+/// Subscription information containing session reference, QoS, topic filter, subscription ID, and RAP flag
 #[derive(Debug, Clone)]
 pub struct Subscription {
-    pub endpoint: EndpointRef,
+    pub session_ref: SessionRef,
     pub qos: mqtt_ep::packet::Qos,
     pub topic_filter: String,
     pub sub_id: Option<u32>,
@@ -109,7 +111,7 @@ impl std::fmt::Debug for EndpointRef {
 /// Subscription entry in trie node
 #[derive(Debug, Clone)]
 struct SubscriptionEntry {
-    pub endpoint: EndpointRef,
+    pub session_ref: SessionRef,
     pub qos: mqtt_ep::packet::Qos,
     pub topic_filter: String,
     pub sub_id: Option<u32>,
@@ -146,11 +148,11 @@ impl SubscriptionStore {
         }
     }
 
-    /// Add a subscription for an endpoint to a topic filter
+    /// Add a subscription for a session to a topic filter
     /// Returns Ok(is_new) where is_new is true if this is a new subscription, false if updating existing
     pub async fn subscribe(
         &self,
-        endpoint: EndpointRef,
+        session_ref: SessionRef,
         topic_filter: &str,
         qos: mqtt_ep::packet::Qos,
         sub_id: Option<u32>,
@@ -164,7 +166,7 @@ impl SubscriptionStore {
         let is_new = Self::insert_subscription(
             &mut root,
             &segments,
-            endpoint.clone(),
+            session_ref.clone(),
             topic_filter,
             qos,
             sub_id,
@@ -173,7 +175,7 @@ impl SubscriptionStore {
         );
 
         trace!(
-            "Subscribed endpoint to topic filter '{topic_filter}' with QoS {qos:?}, sub_id {sub_id:?}, is_new: {is_new}"
+            "Subscribed session to topic filter '{topic_filter}' with QoS {qos:?}, sub_id {sub_id:?}, is_new: {is_new}"
         );
         Ok(is_new)
     }
@@ -183,7 +185,7 @@ impl SubscriptionStore {
     fn insert_subscription(
         node: &mut TrieNode,
         segments: &[&str],
-        endpoint: EndpointRef,
+        session_ref: SessionRef,
         topic_filter: &str,
         qos: mqtt_ep::packet::Qos,
         sub_id: Option<u32>,
@@ -194,7 +196,7 @@ impl SubscriptionStore {
             // End of path - add to exact subscribers
             return Self::upsert_subscription(
                 &mut node.exact_subscribers,
-                endpoint,
+                session_ref,
                 topic_filter,
                 qos,
                 sub_id,
@@ -209,7 +211,7 @@ impl SubscriptionStore {
                 // Multi-level wildcard - matches everything from this point
                 Self::upsert_subscription(
                     &mut node.multi_wildcard_subscribers,
-                    endpoint,
+                    session_ref,
                     topic_filter,
                     qos,
                     sub_id,
@@ -226,7 +228,7 @@ impl SubscriptionStore {
                         // This is the last segment
                         Self::upsert_subscription(
                             &mut wildcard_child.single_wildcard_subscribers,
-                            endpoint,
+                            session_ref,
                             topic_filter,
                             qos,
                             sub_id,
@@ -236,7 +238,7 @@ impl SubscriptionStore {
                         Self::insert_subscription(
                             wildcard_child,
                             segments,
-                            endpoint,
+                            session_ref,
                             topic_filter,
                             qos,
                             sub_id,
@@ -257,7 +259,7 @@ impl SubscriptionStore {
                 Self::insert_subscription(
                     child,
                     segments,
-                    endpoint,
+                    session_ref,
                     topic_filter,
                     qos,
                     sub_id,
@@ -272,16 +274,16 @@ impl SubscriptionStore {
     /// Returns true if this is a new subscription, false if updating existing
     fn upsert_subscription(
         subscribers: &mut Vec<SubscriptionEntry>,
-        endpoint: EndpointRef,
+        session_ref: SessionRef,
         topic_filter: &str,
         qos: mqtt_ep::packet::Qos,
         sub_id: Option<u32>,
         rap: bool,
     ) -> bool {
-        // Find existing subscription with same endpoint and topic_filter
+        // Find existing subscription with same session_ref and topic_filter
         if let Some(existing) = subscribers
             .iter_mut()
-            .find(|s| s.endpoint == endpoint && s.topic_filter == topic_filter)
+            .find(|s| s.session_ref == session_ref && s.topic_filter == topic_filter)
         {
             // Update existing subscription (QoS, sub_id, and rap overwrite)
             existing.qos = qos;
@@ -291,7 +293,7 @@ impl SubscriptionStore {
         } else {
             // Add new subscription
             subscribers.push(SubscriptionEntry {
-                endpoint,
+                session_ref,
                 qos,
                 topic_filter: topic_filter.to_string(),
                 sub_id,
@@ -301,10 +303,10 @@ impl SubscriptionStore {
         }
     }
 
-    /// Remove a subscription for an endpoint from a topic filter
+    /// Remove a subscription for a session from a topic filter
     pub async fn unsubscribe(
         &self,
-        endpoint: &EndpointRef,
+        session_ref: &SessionRef,
         topic_filter: &str,
     ) -> Result<bool, SubscriptionError> {
         Self::validate_topic_filter(topic_filter)?;
@@ -312,7 +314,7 @@ impl SubscriptionStore {
         let mut root = self.root.write().await;
         let segments: Vec<&str> = topic_filter.split('/').collect();
 
-        let removed = Self::remove_subscription(&mut root, &segments, endpoint, 0);
+        let removed = Self::remove_subscription(&mut root, &segments, session_ref, 0);
         Ok(removed)
     }
 
@@ -320,26 +322,26 @@ impl SubscriptionStore {
     fn remove_subscription(
         node: &mut TrieNode,
         segments: &[&str],
-        endpoint: &EndpointRef,
+        session_ref: &SessionRef,
         depth: usize,
     ) -> bool {
         if depth >= segments.len() {
-            return Self::remove_from_vec(&mut node.exact_subscribers, endpoint);
+            return Self::remove_from_vec(&mut node.exact_subscribers, session_ref);
         }
 
         let segment = segments[depth];
 
         match segment {
-            "#" => Self::remove_from_vec(&mut node.multi_wildcard_subscribers, endpoint),
+            "#" => Self::remove_from_vec(&mut node.multi_wildcard_subscribers, session_ref),
             "+" => {
                 if let Some(ref mut wildcard_child) = node.wildcard_child {
                     if depth + 1 >= segments.len() {
                         Self::remove_from_vec(
                             &mut wildcard_child.single_wildcard_subscribers,
-                            endpoint,
+                            session_ref,
                         )
                     } else {
-                        Self::remove_subscription(wildcard_child, segments, endpoint, depth + 1)
+                        Self::remove_subscription(wildcard_child, segments, session_ref, depth + 1)
                     }
                 } else {
                     false
@@ -347,7 +349,7 @@ impl SubscriptionStore {
             }
             _ => {
                 if let Some(child) = node.children.get_mut(segment) {
-                    Self::remove_subscription(child, segments, endpoint, depth + 1)
+                    Self::remove_subscription(child, segments, session_ref, depth + 1)
                 } else {
                     false
                 }
@@ -355,9 +357,12 @@ impl SubscriptionStore {
         }
     }
 
-    /// Remove endpoint from subscription vector
-    fn remove_from_vec(subscribers: &mut Vec<SubscriptionEntry>, endpoint: &EndpointRef) -> bool {
-        if let Some(pos) = subscribers.iter().position(|s| &s.endpoint == endpoint) {
+    /// Remove session from subscription vector
+    fn remove_from_vec(subscribers: &mut Vec<SubscriptionEntry>, session_ref: &SessionRef) -> bool {
+        if let Some(pos) = subscribers
+            .iter()
+            .position(|s| &s.session_ref == session_ref)
+        {
             subscribers.remove(pos);
             true
         } else {
@@ -365,27 +370,28 @@ impl SubscriptionStore {
         }
     }
 
-    /// Remove all subscriptions for an endpoint
-    pub async fn unsubscribe_all(&self, endpoint: &EndpointRef) {
+    /// Remove all subscriptions for a session
+    pub async fn unsubscribe_all(&self, session_ref: &SessionRef) {
         let mut root = self.root.write().await;
-        Self::remove_all_subscriptions(&mut root, endpoint);
+        Self::remove_all_subscriptions(&mut root, session_ref);
     }
 
-    /// Recursively remove all subscriptions for an endpoint
-    fn remove_all_subscriptions(node: &mut TrieNode, endpoint: &EndpointRef) {
-        node.exact_subscribers.retain(|s| &s.endpoint != endpoint);
+    /// Recursively remove all subscriptions for a session
+    fn remove_all_subscriptions(node: &mut TrieNode, session_ref: &SessionRef) {
+        node.exact_subscribers
+            .retain(|s| &s.session_ref != session_ref);
         node.single_wildcard_subscribers
-            .retain(|s| &s.endpoint != endpoint);
+            .retain(|s| &s.session_ref != session_ref);
         node.multi_wildcard_subscribers
-            .retain(|s| &s.endpoint != endpoint);
+            .retain(|s| &s.session_ref != session_ref);
 
         // Recursively clean children
         for child in node.children.values_mut() {
-            Self::remove_all_subscriptions(child, endpoint);
+            Self::remove_all_subscriptions(child, session_ref);
         }
 
         if let Some(ref mut wildcard_child) = node.wildcard_child {
-            Self::remove_all_subscriptions(wildcard_child, endpoint);
+            Self::remove_all_subscriptions(wildcard_child, session_ref);
         }
     }
 
@@ -402,7 +408,7 @@ impl SubscriptionStore {
         let result: Vec<Subscription> = all_subscribers
             .into_iter()
             .map(|entry| Subscription {
-                endpoint: entry.endpoint,
+                session_ref: entry.session_ref,
                 qos: entry.qos,
                 topic_filter: entry.topic_filter,
                 sub_id: entry.sub_id,
@@ -454,26 +460,26 @@ impl SubscriptionStore {
         }
     }
 
-    /// Check if an endpoint is subscribed to a specific topic filter
-    pub async fn is_subscribed(&self, endpoint: &EndpointRef, topic_filter: &str) -> bool {
+    /// Check if a session is subscribed to a specific topic filter
+    pub async fn is_subscribed(&self, session_ref: &SessionRef, topic_filter: &str) -> bool {
         let root = self.root.read().await;
         let segments: Vec<&str> = topic_filter.split('/').collect();
 
-        Self::check_subscription(&root, &segments, endpoint, 0)
+        Self::check_subscription(&root, &segments, session_ref, 0)
     }
 
     /// Recursively check if a subscription exists
     fn check_subscription(
         node: &TrieNode,
         segments: &[&str],
-        endpoint: &EndpointRef,
+        session_ref: &SessionRef,
         depth: usize,
     ) -> bool {
         if depth >= segments.len() {
             return node
                 .exact_subscribers
                 .iter()
-                .any(|s| &s.endpoint == endpoint);
+                .any(|s| &s.session_ref == session_ref);
         }
 
         let segment = segments[depth];
@@ -482,16 +488,16 @@ impl SubscriptionStore {
             "#" => node
                 .multi_wildcard_subscribers
                 .iter()
-                .any(|s| &s.endpoint == endpoint),
+                .any(|s| &s.session_ref == session_ref),
             "+" => {
                 if let Some(ref wildcard_child) = node.wildcard_child {
                     if depth + 1 >= segments.len() {
                         wildcard_child
                             .single_wildcard_subscribers
                             .iter()
-                            .any(|s| &s.endpoint == endpoint)
+                            .any(|s| &s.session_ref == session_ref)
                     } else {
-                        Self::check_subscription(wildcard_child, segments, endpoint, depth + 1)
+                        Self::check_subscription(wildcard_child, segments, session_ref, depth + 1)
                     }
                 } else {
                     false
@@ -499,7 +505,7 @@ impl SubscriptionStore {
             }
             _ => {
                 if let Some(child) = node.children.get(segment) {
-                    Self::check_subscription(child, segments, endpoint, depth + 1)
+                    Self::check_subscription(child, segments, session_ref, depth + 1)
                 } else {
                     false
                 }
@@ -507,15 +513,15 @@ impl SubscriptionStore {
         }
     }
 
-    /// Get all topic filters for an endpoint
-    pub async fn get_endpoint_subscriptions(&self, endpoint: &EndpointRef) -> Vec<String> {
+    /// Get all topic filters for a session
+    pub async fn get_session_subscriptions(&self, session_ref: &SessionRef) -> Vec<String> {
         let root = self.root.read().await;
         let mut subscriptions = Vec::new();
         let mut current_path = Vec::new();
 
-        Self::collect_endpoint_subscriptions(
+        Self::collect_session_subscriptions(
             &root,
-            endpoint,
+            session_ref,
             &mut current_path,
             &mut subscriptions,
         );
@@ -523,23 +529,23 @@ impl SubscriptionStore {
         subscriptions
     }
 
-    /// Recursively collect all subscriptions for an endpoint
-    fn collect_endpoint_subscriptions(
+    /// Recursively collect all subscriptions for a session
+    fn collect_session_subscriptions(
         node: &TrieNode,
-        endpoint: &EndpointRef,
+        session_ref: &SessionRef,
         current_path: &mut Vec<String>,
         subscriptions: &mut Vec<String>,
     ) {
         // Check exact subscription at this level
         for entry in &node.exact_subscribers {
-            if &entry.endpoint == endpoint {
+            if &entry.session_ref == session_ref {
                 subscriptions.push(current_path.join("/"));
             }
         }
 
         // Check multi-level wildcard subscription
         for entry in &node.multi_wildcard_subscribers {
-            if &entry.endpoint == endpoint {
+            if &entry.session_ref == session_ref {
                 let mut path = current_path.clone();
                 path.push("#".to_string());
                 subscriptions.push(path.join("/"));
@@ -549,7 +555,7 @@ impl SubscriptionStore {
         // Check single-level wildcard subscription
         if let Some(ref wildcard_child) = node.wildcard_child {
             for entry in &wildcard_child.single_wildcard_subscribers {
-                if &entry.endpoint == endpoint {
+                if &entry.session_ref == session_ref {
                     let mut path = current_path.clone();
                     path.push("+".to_string());
                     subscriptions.push(path.join("/"));
@@ -558,9 +564,9 @@ impl SubscriptionStore {
 
             // Recurse into wildcard child
             current_path.push("+".to_string());
-            Self::collect_endpoint_subscriptions(
+            Self::collect_session_subscriptions(
                 wildcard_child,
-                endpoint,
+                session_ref,
                 current_path,
                 subscriptions,
             );
@@ -570,7 +576,7 @@ impl SubscriptionStore {
         // Recurse into exact children
         for (segment, child) in &node.children {
             current_path.push(segment.clone());
-            Self::collect_endpoint_subscriptions(child, endpoint, current_path, subscriptions);
+            Self::collect_session_subscriptions(child, session_ref, current_path, subscriptions);
             current_path.pop();
         }
     }
@@ -616,4 +622,3 @@ impl Default for SubscriptionStore {
         Self::new()
     }
 }
-

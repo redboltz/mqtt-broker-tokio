@@ -5,13 +5,14 @@
 // SPDX-License-Identifier: MIT
 
 use super::BrokerManager;
+use super::SubscriptionMessage;
 use crate::retained_store::RetainedStore;
-use crate::subscription_store::{EndpointRef, SubscriptionStore};
+use crate::session_store::SessionRef;
+use crate::subscription_store::SubscriptionStore;
 use mqtt_endpoint_tokio::mqtt_ep;
 use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
-use super::SubscriptionMessage;
 use tracing::trace;
 
 impl BrokerManager {
@@ -23,7 +24,7 @@ impl BrokerManager {
         props: Vec<mqtt_ep::packet::Property>,
         subscription_tx: &mpsc::Sender<SubscriptionMessage>,
         endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
-        endpoint_ref: &EndpointRef,
+        session_ref: &SessionRef,
         _subscription_store: &Arc<SubscriptionStore>,
         retained_store: &Arc<RetainedStore>,
     ) -> anyhow::Result<()> {
@@ -47,7 +48,9 @@ impl BrokerManager {
             let is_shared = topic_filter.starts_with("$share/");
 
             topic_filters.push((topic_filter.clone(), qos, rap));
-            trace!("SUBSCRIBE: endpoint wants to subscribe to '{topic_filter}' with QoS {qos:?}, RH={rh:?}, RAP={rap}");
+            trace!(
+                "SUBSCRIBE: endpoint wants to subscribe to '{topic_filter}' with QoS {qos:?}, RH={rh:?}, RAP={rap}"
+            );
             entry_info.push((topic_filter, qos, rh, rap, is_shared));
         }
 
@@ -55,7 +58,7 @@ impl BrokerManager {
         let (response_tx, response_rx) = oneshot::channel();
         subscription_tx
             .send(SubscriptionMessage::Subscribe {
-                endpoint: endpoint_ref.clone(),
+                session_ref: session_ref.clone(),
                 topics: topic_filters,
                 sub_id,
                 response_tx,
@@ -65,10 +68,7 @@ impl BrokerManager {
         let return_codes_with_is_new = response_rx.await?;
 
         // Extract return codes for SUBACK
-        let return_codes: Vec<_> = return_codes_with_is_new
-            .iter()
-            .map(|(rc, _)| *rc)
-            .collect();
+        let return_codes: Vec<_> = return_codes_with_is_new.iter().map(|(rc, _)| *rc).collect();
 
         // Send SUBACK using the unified function
         // Note: SUBACK should not include SubscriptionIdentifier property from SUBSCRIBE
@@ -122,7 +122,7 @@ impl BrokerManager {
                         endpoint,
                         &retained_msg.topic_name,
                         effective_qos,
-                        true, // retain flag stays true for retained messages
+                        true,  // retain flag stays true for retained messages
                         false, // dup is false
                         retained_msg.payload.clone(),
                         msg_props,
@@ -145,7 +145,7 @@ impl BrokerManager {
         entries: &[impl AsRef<str>],
         subscription_tx: &mpsc::Sender<SubscriptionMessage>,
         endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
-        endpoint_ref: &EndpointRef,
+        session_ref: &SessionRef,
     ) -> anyhow::Result<()> {
         let mut topics = Vec::new();
 
@@ -157,7 +157,7 @@ impl BrokerManager {
         let (response_tx, response_rx) = oneshot::channel();
         subscription_tx
             .send(SubscriptionMessage::Unsubscribe {
-                endpoint: endpoint_ref.clone(),
+                session_ref: session_ref.clone(),
                 topics,
                 response_tx,
             })
