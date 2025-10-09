@@ -273,23 +273,26 @@ fn configure_individual_socket_options(
     }
 }
 
-/// Configure listener socket options for optimal performance
-fn configure_listener_socket(
-    listener: &tokio::net::TcpListener,
+/// Create and configure TCP listener with SO_REUSEADDR (and optionally SO_REUSEPORT)
+fn create_tcp_listener(
+    bind_addr: std::net::SocketAddr,
     reuseport: bool,
-) -> anyhow::Result<()> {
-    let sock_ref = SockRef::from(listener);
+) -> anyhow::Result<tokio::net::TcpListener> {
+    // Create socket
+    let socket = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::STREAM,
+        Some(socket2::Protocol::TCP),
+    )?;
 
-    // Always set SO_REUSEADDR
-    sock_ref
-        .set_reuse_address(true)
-        .map_err(|e| anyhow::anyhow!("Failed to set SO_REUSEADDR: {}", e))?;
+    // Set SO_REUSEADDR before bind
+    socket.set_reuse_address(true)?;
 
-    // Set SO_REUSEPORT (Linux only)
+    // Set SO_REUSEPORT if requested (before bind)
     #[cfg(target_os = "linux")]
     if reuseport {
         use std::os::unix::io::AsRawFd;
-        let fd = listener.as_raw_fd();
+        let fd = socket.as_raw_fd();
         unsafe {
             let optval: libc::c_int = 1;
             if libc::setsockopt(
@@ -305,7 +308,13 @@ fn configure_listener_socket(
         }
     }
 
-    Ok(())
+    // Bind and listen
+    socket.bind(&bind_addr.into())?;
+    socket.listen(1024)?;
+    socket.set_nonblocking(true)?;
+
+    // Convert to tokio listener
+    Ok(tokio::net::TcpListener::from_std(socket.into())?)
 }
 
 async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> anyhow::Result<()> {
@@ -409,11 +418,8 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
     // TCP listener
     if let Some(port) = args.tcp_port {
         info!("Starting TCP listener on port {port}");
-        let bind_addr = format!("0.0.0.0:{port}");
-        let tcp_listener = tokio::net::TcpListener::bind(&bind_addr).await?;
-        if let Some(reuseport) = args.socket_reuseport {
-            configure_listener_socket(&tcp_listener, reuseport)?;
-        }
+        let bind_addr: std::net::SocketAddr = format!("0.0.0.0:{port}").parse()?;
+        let tcp_listener = create_tcp_listener(bind_addr, args.socket_reuseport.unwrap_or(false))?;
         info!("Listening on TCP port {port} for MQTT (dual-version support)");
 
         let broker_clone = broker.clone();
@@ -457,11 +463,8 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
         let cert_path = args.server_crt.as_ref().unwrap();
         let key_path = args.server_key.as_ref().unwrap();
         let acceptor = load_tls_acceptor(cert_path, key_path)?;
-        let bind_addr = format!("0.0.0.0:{port}");
-        let tls_listener = tokio::net::TcpListener::bind(&bind_addr).await?;
-        if let Some(reuseport) = args.socket_reuseport {
-            configure_listener_socket(&tls_listener, reuseport)?;
-        }
+        let bind_addr: std::net::SocketAddr = format!("0.0.0.0:{port}").parse()?;
+        let tls_listener = create_tcp_listener(bind_addr, args.socket_reuseport.unwrap_or(false))?;
         info!("Listening on TLS port {port} for MQTT (dual-version support)");
 
         let broker_clone = broker.clone();
@@ -510,11 +513,8 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
     // WebSocket listener
     if let Some(port) = args.ws_port {
         info!("Starting WebSocket listener on port {port}");
-        let bind_addr = format!("0.0.0.0:{port}");
-        let ws_listener = tokio::net::TcpListener::bind(&bind_addr).await?;
-        if let Some(reuseport) = args.socket_reuseport {
-            configure_listener_socket(&ws_listener, reuseport)?;
-        }
+        let bind_addr: std::net::SocketAddr = format!("0.0.0.0:{port}").parse()?;
+        let ws_listener = create_tcp_listener(bind_addr, args.socket_reuseport.unwrap_or(false))?;
         info!("Listening on WebSocket port {port} for MQTT (dual-version support)");
 
         let broker_clone = broker.clone();
@@ -584,11 +584,8 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
         let cert_path = args.server_crt.as_ref().unwrap();
         let key_path = args.server_key.as_ref().unwrap();
         let acceptor = load_tls_acceptor(cert_path, key_path)?;
-        let bind_addr = format!("0.0.0.0:{port}");
-        let ws_tls_listener = tokio::net::TcpListener::bind(&bind_addr).await?;
-        if let Some(reuseport) = args.socket_reuseport {
-            configure_listener_socket(&ws_tls_listener, reuseport)?;
-        }
+        let bind_addr: std::net::SocketAddr = format!("0.0.0.0:{port}").parse()?;
+        let ws_tls_listener = create_tcp_listener(bind_addr, args.socket_reuseport.unwrap_or(false))?;
         info!("Listening on WebSocket+TLS port {port} for MQTT (dual-version support)");
 
         let broker_clone = broker.clone();
