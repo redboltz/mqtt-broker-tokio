@@ -800,6 +800,7 @@ impl BrokerManager {
     }
 
     /// Send offline messages to endpoint
+    /// Offline messages are deleted from the list after successful send() since they become stored_packets
     async fn send_offline_messages(
         endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
         client_id: &str,
@@ -873,11 +874,12 @@ impl BrokerManager {
 
             if let Err(e) = result {
                 error!("Failed to send offline message to {client_id}: {e}");
+                // Failed to send: message is lost (endpoint error likely means connection is broken)
             }
+            // If send() succeeds, the message is now managed by endpoint as stored_packet
+            // So we implicitly delete it from offline_messages by not re-adding it
         }
 
-        trace!(
-            "Finished sending offline messages to client {client_id}"
-        );
+        trace!("Finished sending offline messages to client {client_id}");
     }
 }
