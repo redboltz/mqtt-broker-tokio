@@ -270,7 +270,7 @@ impl BrokerManager {
         trace!("Starting endpoint task (waiting for CONNECT)");
 
         // First, wait for CONNECT packet
-        let (client_id, user_name, session_expiry_interval) = match endpoint.recv().await {
+        let (client_id, user_name, session_expiry_interval, need_keep, session_present, clean_start_or_session) = match endpoint.recv().await {
             Ok(packet) => {
                 trace!("🔍 Received first packet: {:?}", packet.packet_type());
                 match &packet {
@@ -288,37 +288,33 @@ impl BrokerManager {
 
                         // For v3.1.1: clean_session=false means session persists indefinitely
                         let session_expiry_interval = if clean_session { 0 } else { u32::MAX };
+                        let need_keep = !clean_session;
 
                         // Create session ID
                         let session_id = SessionId::new(user_name.clone(), extracted_id.clone());
 
-                        // Determine session_present
+                        // Step 1: Disconnect existing online session if any (session takeover)
+                        session_store.disconnect_existing_session(&session_id).await;
+
+                        // Step 2: Check if session exists after disconnect
+                        let existing_session = session_store.get_session(&session_id).await;
+
                         let session_present = if clean_session {
                             // Clean session: remove existing session if any
-                            session_store.remove_session(&session_id).await;
+                            if existing_session.is_some() {
+                                session_store.remove_session(&session_id).await;
+                            }
                             false
                         } else {
                             // Check if session exists
-                            session_store.get_session(&session_id).await.is_some()
+                            existing_session.is_some()
                         };
 
-                        // Send CONNACK for v3.1.1
-                        let connack = mqtt_ep::packet::v3_1_1::Connack::builder()
-                            .session_present(session_present)
-                            .return_code(mqtt_ep::result_code::ConnectReturnCode::Accepted)
-                            .build()
-                            .unwrap();
-
                         trace!(
-                            "Sending CONNACK to client {extracted_id}, session_present={session_present}..."
+                            "Session takeover complete for {extracted_id}, session_present={session_present}"
                         );
-                        if let Err(e) = endpoint.send(connack).await {
-                            error!("Failed to send CONNACK: {e}");
-                            return None;
-                        }
 
-                        trace!("CONNACK successfully sent to client {extracted_id}");
-                        (extracted_id, user_name, session_expiry_interval)
+                        (extracted_id, user_name, session_expiry_interval, need_keep, session_present, clean_session)
                     }
                     mqtt_ep::packet::Packet::V5_0Connect(connect) => {
                         let extracted_id = if connect.client_id().is_empty() {
@@ -342,6 +338,8 @@ impl BrokerManager {
                             })
                             .unwrap_or(0);
 
+                        let need_keep = session_expiry_interval > 0;
+
                         trace!(
                             "MQTT v5.0 client {extracted_id} connected, clean_start={clean_start}, session_expiry_interval={session_expiry_interval}"
                         );
@@ -349,33 +347,28 @@ impl BrokerManager {
                         // Create session ID
                         let session_id = SessionId::new(user_name.clone(), extracted_id.clone());
 
-                        // Determine session_present
+                        // Step 1: Disconnect existing online session if any (session takeover)
+                        session_store.disconnect_existing_session(&session_id).await;
+
+                        // Step 2: Check if session exists after disconnect
+                        let existing_session = session_store.get_session(&session_id).await;
+
                         let session_present = if clean_start {
                             // Clean start: remove existing session if any
-                            session_store.remove_session(&session_id).await;
+                            if existing_session.is_some() {
+                                session_store.remove_session(&session_id).await;
+                            }
                             false
                         } else {
                             // Check if session exists
-                            session_store.get_session(&session_id).await.is_some()
+                            existing_session.is_some()
                         };
 
-                        // Send CONNACK for v5.0
-                        let connack = mqtt_ep::packet::v5_0::Connack::builder()
-                            .session_present(session_present)
-                            .reason_code(mqtt_ep::result_code::ConnectReasonCode::Success)
-                            .build()
-                            .unwrap();
-
                         trace!(
-                            "Sending CONNACK to client {extracted_id}, session_present={session_present}..."
+                            "Session takeover complete for {extracted_id}, session_present={session_present}"
                         );
-                        if let Err(e) = endpoint.send(connack).await {
-                            error!("Failed to send CONNACK: {e}");
-                            return None;
-                        }
 
-                        trace!("CONNACK successfully sent to client {extracted_id}");
-                        (extracted_id, user_name, session_expiry_interval)
+                        (extracted_id, user_name, session_expiry_interval, need_keep, session_present, clean_start)
                     }
                     _ => {
                         error!("Expected CONNECT packet, received: {packet:?}");
@@ -393,15 +386,78 @@ impl BrokerManager {
         let endpoint_arc = Arc::new(endpoint);
         let _endpoint_ref = EndpointRef::new(endpoint_arc.clone());
 
-        // Create/update session
+        // Create session ID
         let session_id = SessionId::new(user_name, client_id.clone());
-        let (session, _is_new) = session_store
-            .get_or_create_session(
-                session_id.clone(),
-                endpoint_arc.clone(),
+
+        // Handle session creation or restoration
+        let session = if session_present && !clean_start_or_session {
+            // Session restoration
+            trace!("Restoring session for client {client_id}");
+
+            // Restore session state (stored packets, QoS2 PIDs, offline messages)
+            let offline_messages = match session_store
+                .restore_session_state(
+                    &session_id,
+                    endpoint_arc.clone(),
+                    session_expiry_interval,
+                    need_keep,
+                )
+                .await
+            {
+                Ok(msgs) => msgs,
+                Err(e) => {
+                    error!("Failed to restore session state for {client_id}: {e}");
+                    return None;
+                }
+            };
+
+            // Send CONNACK with session_present=true
+            if let Err(e) = Self::send_connack_for_restore(
+                &endpoint_arc,
+                &client_id,
                 session_expiry_interval,
             )
-            .await;
+            .await
+            {
+                error!("Failed to send CONNACK for {client_id}: {e}");
+                return None;
+            }
+
+            // Send offline messages
+            Self::send_offline_messages(&endpoint_arc, &client_id, offline_messages).await;
+
+            // Get session
+            match session_store.get_session(&session_id).await {
+                Some(s) => s,
+                None => {
+                    error!("Session disappeared after restoration for {client_id}");
+                    return None;
+                }
+            }
+        } else {
+            // New session or clean start
+            trace!("Creating new session for client {client_id}");
+
+            // Send CONNACK with session_present=false
+            if let Err(e) =
+                Self::send_connack_for_new(&endpoint_arc, &client_id, session_expiry_interval)
+                    .await
+            {
+                error!("Failed to send CONNACK for {client_id}: {e}");
+                return None;
+            }
+
+            // Create new session
+            let (session, _is_new) = session_store
+                .get_or_create_session(
+                    session_id.clone(),
+                    endpoint_arc.clone(),
+                    session_expiry_interval,
+                    need_keep,
+                )
+                .await;
+            session
+        };
 
         // Create session reference
         let session_ref = SessionRef::new(session_id.clone());
@@ -663,5 +719,165 @@ impl BrokerManager {
 
         trace!("PINGRESP sent to client {client_id}");
         Ok(())
+    }
+
+    /// Send CONNACK for session restoration (session_present=true)
+    async fn send_connack_for_restore(
+        endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
+        client_id: &str,
+        _session_expiry_interval: u32,
+    ) -> anyhow::Result<()> {
+        let endpoint_version = endpoint
+            .get_protocol_version()
+            .await
+            .unwrap_or(mqtt_ep::Version::V5_0);
+
+        match endpoint_version {
+            mqtt_ep::Version::V3_1_1 => {
+                let connack = mqtt_ep::packet::v3_1_1::Connack::builder()
+                    .session_present(true)
+                    .return_code(mqtt_ep::result_code::ConnectReturnCode::Accepted)
+                    .build()
+                    .unwrap();
+                trace!("Sending CONNACK (session_present=true) to client {client_id}");
+                endpoint.send(connack).await?;
+            }
+            mqtt_ep::Version::V5_0 => {
+                let connack = mqtt_ep::packet::v5_0::Connack::builder()
+                    .session_present(true)
+                    .reason_code(mqtt_ep::result_code::ConnectReasonCode::Success)
+                    .build()
+                    .unwrap();
+                trace!("Sending CONNACK (session_present=true) to client {client_id}");
+                endpoint.send(connack).await?;
+            }
+            _ => {
+                return Err(anyhow::anyhow!("Unsupported MQTT version"));
+            }
+        }
+
+        trace!("CONNACK (session_present=true) sent to client {client_id}");
+        Ok(())
+    }
+
+    /// Send CONNACK for new session (session_present=false)
+    async fn send_connack_for_new(
+        endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
+        client_id: &str,
+        _session_expiry_interval: u32,
+    ) -> anyhow::Result<()> {
+        let endpoint_version = endpoint
+            .get_protocol_version()
+            .await
+            .unwrap_or(mqtt_ep::Version::V5_0);
+
+        match endpoint_version {
+            mqtt_ep::Version::V3_1_1 => {
+                let connack = mqtt_ep::packet::v3_1_1::Connack::builder()
+                    .session_present(false)
+                    .return_code(mqtt_ep::result_code::ConnectReturnCode::Accepted)
+                    .build()
+                    .unwrap();
+                trace!("Sending CONNACK (session_present=false) to client {client_id}");
+                endpoint.send(connack).await?;
+            }
+            mqtt_ep::Version::V5_0 => {
+                let connack = mqtt_ep::packet::v5_0::Connack::builder()
+                    .session_present(false)
+                    .reason_code(mqtt_ep::result_code::ConnectReasonCode::Success)
+                    .build()
+                    .unwrap();
+                trace!("Sending CONNACK (session_present=false) to client {client_id}");
+                endpoint.send(connack).await?;
+            }
+            _ => {
+                return Err(anyhow::anyhow!("Unsupported MQTT version"));
+            }
+        }
+
+        trace!("CONNACK (session_present=false) sent to client {client_id}");
+        Ok(())
+    }
+
+    /// Send offline messages to endpoint
+    async fn send_offline_messages(
+        endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
+        client_id: &str,
+        offline_messages: Vec<crate::session_store::OfflineMessage>,
+    ) {
+        trace!(
+            "Sending {} offline messages to client {client_id}",
+            offline_messages.len()
+        );
+
+        for msg in offline_messages {
+            // Acquire packet ID for QoS > 0
+            let packet_id = if msg.qos != mqtt_ep::packet::Qos::AtMostOnce {
+                match endpoint.acquire_packet_id_when_available().await {
+                    Ok(id) => id,
+                    Err(e) => {
+                        error!("Failed to acquire packet ID for offline message: {e}");
+                        continue;
+                    }
+                }
+            } else {
+                0 // QoS 0 doesn't need packet ID
+            };
+
+            // Build and send PUBLISH packet
+            let endpoint_version = endpoint
+                .get_protocol_version()
+                .await
+                .unwrap_or(mqtt_ep::Version::V5_0);
+
+            let result = match endpoint_version {
+                mqtt_ep::Version::V3_1_1 => {
+                    let mut builder = mqtt_ep::packet::v3_1_1::Publish::builder()
+                        .topic_name(&msg.topic_name)
+                        .expect("Failed to set topic_name")
+                        .qos(msg.qos)
+                        .retain(msg.retain)
+                        .payload(msg.payload.clone());
+
+                    if msg.qos != mqtt_ep::packet::Qos::AtMostOnce {
+                        builder = builder.packet_id(packet_id);
+                    }
+
+                    let publish = builder.build().expect("Failed to build PUBLISH");
+                    endpoint.send(publish).await
+                }
+                mqtt_ep::Version::V5_0 => {
+                    let mut builder = mqtt_ep::packet::v5_0::Publish::builder()
+                        .topic_name(&msg.topic_name)
+                        .expect("Failed to set topic_name")
+                        .qos(msg.qos)
+                        .retain(msg.retain)
+                        .payload(msg.payload.clone());
+
+                    if !msg.props.is_empty() {
+                        builder = builder.props(msg.props.clone());
+                    }
+
+                    if msg.qos != mqtt_ep::packet::Qos::AtMostOnce {
+                        builder = builder.packet_id(packet_id);
+                    }
+
+                    let publish = builder.build().expect("Failed to build PUBLISH");
+                    endpoint.send(publish).await
+                }
+                _ => {
+                    error!("Unsupported MQTT version for offline message");
+                    continue;
+                }
+            };
+
+            if let Err(e) = result {
+                error!("Failed to send offline message to {client_id}: {e}");
+            }
+        }
+
+        trace!(
+            "Finished sending offline messages to client {client_id}"
+        );
     }
 }
