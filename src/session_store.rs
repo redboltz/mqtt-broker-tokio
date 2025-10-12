@@ -146,7 +146,10 @@ impl Session {
         }
     }
 
-    /// Mark session as offline (endpoint is kept for session restoration)
+    /// Mark session as offline
+    /// Note: We don't clear the endpoint here because it's needed for session restoration
+    /// (to get stored_packets and QoS2 PIDs). The send_publish method checks self.online
+    /// instead of self.endpoint to determine if messages should be stored offline.
     pub fn set_offline(&mut self) {
         self.online = false;
     }
@@ -202,8 +205,9 @@ impl Session {
         payload: mqtt_ep::common::ArcPayload,
         props: Vec<mqtt_ep::packet::Property>,
     ) {
-        if let Some(endpoint) = &self.endpoint {
+        if self.online {
             // Online: send message directly
+            if let Some(endpoint) = &self.endpoint {
             // Get endpoint version to build appropriate PUBLISH packet
             let endpoint_version = endpoint
                 .get_protocol_version()
@@ -266,6 +270,9 @@ impl Session {
                 _ => {
                     debug!("Unsupported MQTT version for session {:?}", self.session_id);
                 }
+            }
+            } else {
+                debug!("Session is online but endpoint is None for {:?}", self.session_id);
             }
         } else {
             // Offline: store message for QoS1/QoS2

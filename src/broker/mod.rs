@@ -143,7 +143,7 @@ impl BrokerManager {
 
         tokio::spawn(async move {
             // Handle client endpoint
-            let session_ref = Self::handle_client_endpoint(
+            let result = Self::handle_client_endpoint(
                 endpoint,
                 subscription_store_for_endpoint,
                 retained_store_for_endpoint,
@@ -153,12 +153,15 @@ impl BrokerManager {
             .await;
 
             // Clean up when endpoint task finishes
-            if let Some(session_ref) = session_ref {
-                if let Err(e) = broker_manager_for_cleanup
-                    .handle_client_disconnect(&session_ref)
-                    .await
-                {
-                    error!("Error during client disconnect cleanup: {e}");
+            if let Some((session_ref, need_keep)) = result {
+                // Only delete subscriptions if session should not be kept
+                if !need_keep {
+                    if let Err(e) = broker_manager_for_cleanup
+                        .handle_client_disconnect(&session_ref)
+                        .await
+                    {
+                        error!("Error during client disconnect cleanup: {e}");
+                    }
                 }
             }
         });
@@ -266,7 +269,7 @@ impl BrokerManager {
         retained_store: Arc<RetainedStore>,
         session_store: Arc<SessionStore>,
         subscription_tx: mpsc::Sender<SubscriptionMessage>,
-    ) -> Option<SessionRef> {
+    ) -> Option<(SessionRef, bool)> {
         trace!("Starting endpoint task (waiting for CONNECT)");
 
         // First, wait for CONNECT packet
@@ -511,13 +514,15 @@ impl BrokerManager {
             trace!("Preserving session for client {client_id} (need_keep=true)");
             let mut session_guard = session.write().await;
             session_guard.set_offline();
+            // Don't delete subscriptions - they should persist with the session
         } else {
             // Delete session immediately
             trace!("Removing session for client {client_id} (need_keep=false)");
             session_store.remove_session(&session_id).await;
+            // Subscriptions will be deleted via ClientDisconnected message
         }
 
-        Some(session_ref)
+        Some((session_ref, need_keep))
     }
 
     /// Handle received packet in endpoint task (direct processing)

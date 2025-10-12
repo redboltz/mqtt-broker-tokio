@@ -108,25 +108,16 @@ impl std::fmt::Debug for EndpointRef {
     }
 }
 
-/// Subscription entry in trie node
-#[derive(Debug, Clone)]
-struct SubscriptionEntry {
-    pub session_ref: SessionRef,
-    pub qos: mqtt_ep::packet::Qos,
-    pub topic_filter: String,
-    pub sub_id: Option<u32>,
-    pub rap: bool,
-}
 
 /// Trie node containing subscription information
 #[derive(Debug, Clone, Default)]
 struct TrieNode {
     /// Subscriptions to this exact path
-    exact_subscribers: Vec<SubscriptionEntry>,
+    exact_subscribers: Vec<Subscription>,
     /// Subscriptions with single-level wildcard at this position
-    single_wildcard_subscribers: Vec<SubscriptionEntry>,
+    single_wildcard_subscribers: Vec<Subscription>,
     /// Subscriptions with multi-level wildcard from this position
-    multi_wildcard_subscribers: Vec<SubscriptionEntry>,
+    multi_wildcard_subscribers: Vec<Subscription>,
     /// Child nodes for each segment
     children: HashMap<String, TrieNode>,
     /// Special child for single-level wildcard (+)
@@ -324,7 +315,7 @@ impl SubscriptionStore {
     /// Insert or update subscription entry (overwrite if identical topic_filter)
     /// Returns true if this is a new subscription, false if updating existing
     fn upsert_subscription(
-        subscribers: &mut Vec<SubscriptionEntry>,
+        subscribers: &mut Vec<Subscription>,
         session_ref: SessionRef,
         topic_filter: &str,
         qos: mqtt_ep::packet::Qos,
@@ -343,7 +334,7 @@ impl SubscriptionStore {
             false // Not a new subscription
         } else {
             // Add new subscription
-            subscribers.push(SubscriptionEntry {
+            subscribers.push(Subscription {
                 session_ref,
                 qos,
                 topic_filter: topic_filter.to_string(),
@@ -419,7 +410,7 @@ impl SubscriptionStore {
     }
 
     /// Remove session from subscription vector
-    fn remove_from_vec(subscribers: &mut Vec<SubscriptionEntry>, session_ref: &SessionRef) -> bool {
+    fn remove_from_vec(subscribers: &mut Vec<Subscription>, session_ref: &SessionRef) -> bool {
         if let Some(pos) = subscribers
             .iter()
             .position(|s| &s.session_ref == session_ref)
@@ -473,16 +464,7 @@ impl SubscriptionStore {
         Self::collect_subscribers(&root, &segments, 0, &mut all_subscribers);
         drop(root);
 
-        let mut result: Vec<Subscription> = all_subscribers
-            .into_iter()
-            .map(|entry| Subscription {
-                session_ref: entry.session_ref,
-                qos: entry.qos,
-                topic_filter: entry.topic_filter,
-                sub_id: entry.sub_id,
-                rap: entry.rap,
-            })
-            .collect();
+        let mut result: Vec<Subscription> = all_subscribers;
 
         // Get shared subscribers (share-name level round-robin with LRU)
         let mut shared_subs = self.shared_subscriptions.write().await;
@@ -542,7 +524,7 @@ impl SubscriptionStore {
         node: &TrieNode,
         topic_segments: &[&str],
         depth: usize,
-        subscribers: &mut Vec<SubscriptionEntry>,
+        subscribers: &mut Vec<Subscription>,
     ) {
         // Multi-level wildcards match everything from this point
         for entry in &node.multi_wildcard_subscribers {
