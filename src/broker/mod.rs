@@ -447,20 +447,18 @@ impl BrokerManager {
 
         // Handle session cleanup on disconnect
         let session_guard = session.read().await;
-        let session_expiry_interval = session_guard.session_expiry_interval();
+        let need_keep = session_guard.need_keep();
         drop(session_guard);
 
-        if session_expiry_interval == 0 {
-            // Session expiry interval is 0: delete session immediately
-            trace!("Removing session for client {client_id} (session_expiry_interval=0)");
-            session_store.remove_session(&session_id).await;
-        } else {
-            // Session should persist: mark endpoint as offline
-            trace!(
-                "Preserving session for client {client_id} (session_expiry_interval={session_expiry_interval})"
-            );
+        if need_keep {
+            // Session should persist: mark as offline
+            trace!("Preserving session for client {client_id} (need_keep=true)");
             let mut session_guard = session.write().await;
-            session_guard.clear_endpoint();
+            session_guard.set_offline();
+        } else {
+            // Delete session immediately
+            trace!("Removing session for client {client_id} (need_keep=false)");
+            session_store.remove_session(&session_id).await;
         }
 
         Some(session_ref)

@@ -67,8 +67,11 @@ pub struct Session {
     /// Session identifier
     pub session_id: SessionId,
 
-    /// Current endpoint (None if offline)
+    /// Current endpoint (kept even when offline for session restoration)
     endpoint: Option<Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>>,
+
+    /// Whether the session is currently online
+    online: bool,
 
     /// Offline messages (QoS1/QoS2 only)
     offline_messages: Vec<OfflineMessage>,
@@ -78,6 +81,9 @@ pub struct Session {
 
     /// Session expiry timer handle (v5.0)
     expiry_timer: Option<tokio::task::JoinHandle<()>>,
+
+    /// Whether to keep session on disconnect (v3.1.1: !clean_session, v5.0: session_expiry_interval > 0)
+    need_keep: bool,
 }
 
 impl Session {
@@ -86,13 +92,16 @@ impl Session {
         session_id: SessionId,
         endpoint: Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
         session_expiry_interval: u32,
+        need_keep: bool,
     ) -> Self {
         Self {
             session_id,
             endpoint: Some(endpoint),
+            online: true, // New session starts as online
             offline_messages: Vec::new(),
             session_expiry_interval,
             expiry_timer: None,
+            need_keep,
         }
     }
 
@@ -106,6 +115,16 @@ impl Session {
         self.session_expiry_interval = interval;
     }
 
+    /// Get need_keep flag
+    pub fn need_keep(&self) -> bool {
+        self.need_keep
+    }
+
+    /// Set need_keep flag
+    pub fn set_need_keep(&mut self, need_keep: bool) {
+        self.need_keep = need_keep;
+    }
+
     /// Get endpoint reference (if online)
     pub fn endpoint(&self) -> Option<&Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>> {
         self.endpoint.as_ref()
@@ -113,12 +132,13 @@ impl Session {
 
     /// Check if session is online
     pub fn is_online(&self) -> bool {
-        self.endpoint.is_some()
+        self.online
     }
 
-    /// Set endpoint (online)
+    /// Set endpoint and mark as online
     pub fn set_endpoint(&mut self, endpoint: Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>) {
         self.endpoint = Some(endpoint);
+        self.online = true;
 
         // Cancel expiry timer when coming online
         if let Some(timer) = self.expiry_timer.take() {
@@ -126,9 +146,9 @@ impl Session {
         }
     }
 
-    /// Clear endpoint (go offline)
-    pub fn clear_endpoint(&mut self) {
-        self.endpoint = None;
+    /// Mark session as offline (endpoint is kept for session restoration)
+    pub fn set_offline(&mut self) {
+        self.online = false;
     }
 
     /// Add offline message
@@ -304,15 +324,17 @@ impl SessionStore {
         session_id: SessionId,
         endpoint: Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
         session_expiry_interval: u32,
+        need_keep: bool,
     ) -> (Arc<RwLock<Session>>, bool) {
         let mut sessions = self.sessions.write().await;
 
         if let Some(session) = sessions.get(&session_id) {
-            // Existing session - update endpoint and expiry interval
+            // Existing session - update endpoint, expiry interval, and need_keep
             debug!("Found existing session for {:?}", session_id);
             let mut session_guard = session.write().await;
             session_guard.set_endpoint(endpoint);
             session_guard.set_session_expiry_interval(session_expiry_interval);
+            session_guard.set_need_keep(need_keep);
             drop(session_guard);
             (session.clone(), false)
         } else {
@@ -322,6 +344,7 @@ impl SessionStore {
                 session_id.clone(),
                 endpoint,
                 session_expiry_interval,
+                need_keep,
             )));
             sessions.insert(session_id, session.clone());
             (session, true)
@@ -344,6 +367,114 @@ impl SessionStore {
     pub async fn get_all_session_ids(&self) -> Vec<SessionId> {
         let sessions = self.sessions.read().await;
         sessions.keys().cloned().collect()
+    }
+
+    /// Disconnect existing online session (for session takeover)
+    /// Returns true if session was disconnected, false if no online session existed
+    pub async fn disconnect_existing_session(&self, session_id: &SessionId) -> bool {
+        let sessions = self.sessions.read().await;
+        if let Some(session_arc) = sessions.get(session_id) {
+            let session_guard = session_arc.read().await;
+
+            if let Some(old_endpoint) = session_guard.endpoint() {
+                let old_endpoint_clone = old_endpoint.clone();
+                drop(session_guard);
+                drop(sessions);
+
+                // Close the old endpoint
+                trace!(
+                    "Disconnecting existing session for {:?} (session takeover)",
+                    session_id
+                );
+                if let Err(e) = old_endpoint_clone.close().await {
+                    debug!("Error during old endpoint close: {e}");
+                }
+
+                true
+            } else {
+                // Session exists but already offline
+                false
+            }
+        } else {
+            // No session exists
+            false
+        }
+    }
+
+    /// Restore session state from offline session to new endpoint
+    /// Returns offline messages that need to be sent
+    pub async fn restore_session_state(
+        &self,
+        session_id: &SessionId,
+        new_endpoint: Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
+        session_expiry_interval: u32,
+        need_keep: bool,
+    ) -> anyhow::Result<Vec<OfflineMessage>> {
+        let sessions = self.sessions.read().await;
+        if let Some(session_arc) = sessions.get(session_id) {
+            let mut session_guard = session_arc.write().await;
+
+            // Get stored packets and QoS2 PIDs from old endpoint (if it exists)
+            if let Some(old_endpoint) = session_guard.endpoint() {
+                trace!("Restoring session state from old endpoint for {:?}", session_id);
+
+                // Get stored packets and QoS2 PIDs from old endpoint
+                let stored_packets = old_endpoint
+                    .get_stored_packets()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to get stored packets: {e}"))?;
+                let qos2_pids = old_endpoint
+                    .get_qos2_publish_handled_pids()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to get QoS2 PIDs: {e}"))?;
+
+                trace!(
+                    "Retrieved stored_packets: {}, qos2_pids: {} from old endpoint",
+                    stored_packets.len(),
+                    qos2_pids.len()
+                );
+
+                // Take offline messages
+                let offline_messages = session_guard.take_offline_messages();
+
+                // Update session with new endpoint
+                session_guard.set_endpoint(new_endpoint.clone());
+                session_guard.set_session_expiry_interval(session_expiry_interval);
+                session_guard.set_need_keep(need_keep);
+
+                drop(session_guard);
+                drop(sessions);
+
+                // Restore stored packets and QoS2 PIDs to new endpoint
+                new_endpoint
+                    .restore_stored_packets(stored_packets)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to restore stored packets: {e}"))?;
+                new_endpoint
+                    .restore_qos2_publish_handled_pids(qos2_pids)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to restore QoS2 PIDs: {e}"))?;
+
+                trace!(
+                    "Restored session state for {:?}, offline_messages: {}",
+                    session_id,
+                    offline_messages.len()
+                );
+
+                Ok(offline_messages)
+            } else {
+                // No old endpoint - this should not happen in normal session restoration
+                Err(anyhow::anyhow!(
+                    "Cannot restore: no old endpoint exists for {:?}",
+                    session_id
+                ))
+            }
+        } else {
+            Err(anyhow::anyhow!(
+                "Session not found for restoration: {:?}",
+                session_id
+            ))
+        }
     }
 }
 
