@@ -26,6 +26,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info, trace};
 use uuid::Uuid;
 
+use crate::auth_impl::Security;
 use crate::retained_store::RetainedStore;
 use crate::session_store::{SessionId, SessionRef, SessionStore};
 use crate::subscription_store::{EndpointRef, SubscriptionStore};
@@ -66,6 +67,9 @@ pub struct BrokerManager {
     /// Global session store
     session_store: Arc<SessionStore>,
 
+    /// Authentication and authorization manager
+    security: Option<Arc<Security>>,
+
     /// Channel to send subscription management messages
     subscription_tx: mpsc::Sender<SubscriptionMessage>,
 
@@ -91,6 +95,33 @@ impl BrokerManager {
             subscription_store,
             retained_store,
             session_store,
+            security: None,
+            subscription_tx,
+            ep_recv_buf_size,
+        })
+    }
+
+    /// Create a new broker manager with security
+    pub async fn new_with_security(
+        ep_recv_buf_size: Option<usize>,
+        security: Security,
+    ) -> anyhow::Result<Self> {
+        let subscription_store = Arc::new(SubscriptionStore::new());
+        let retained_store = Arc::new(RetainedStore::new());
+        let session_store = Arc::new(SessionStore::new());
+        let (subscription_tx, subscription_rx) = mpsc::channel(1000);
+
+        // Spawn subscription management task
+        let store_for_task = subscription_store.clone();
+        tokio::spawn(async move {
+            Self::subscription_manager_task(store_for_task, subscription_rx).await;
+        });
+
+        Ok(Self {
+            subscription_store,
+            retained_store,
+            session_store,
+            security: Some(Arc::new(security)),
             subscription_tx,
             ep_recv_buf_size,
         })
@@ -138,6 +169,7 @@ impl BrokerManager {
         let subscription_store_for_endpoint = self.subscription_store.clone();
         let retained_store_for_endpoint = self.retained_store.clone();
         let session_store_for_endpoint = self.session_store.clone();
+        let security_for_endpoint = self.security.clone();
         let subscription_tx_for_endpoint = self.subscription_tx.clone();
         let broker_manager_for_cleanup = self.clone();
 
@@ -148,6 +180,7 @@ impl BrokerManager {
                 subscription_store_for_endpoint,
                 retained_store_for_endpoint,
                 session_store_for_endpoint,
+                security_for_endpoint,
                 subscription_tx_for_endpoint,
             )
             .await;
@@ -268,6 +301,7 @@ impl BrokerManager {
         subscription_store: Arc<SubscriptionStore>,
         retained_store: Arc<RetainedStore>,
         session_store: Arc<SessionStore>,
+        security: Option<Arc<Security>>,
         subscription_tx: mpsc::Sender<SubscriptionMessage>,
     ) -> Option<(SessionRef, bool)> {
         trace!("Starting endpoint task (waiting for CONNECT)");
