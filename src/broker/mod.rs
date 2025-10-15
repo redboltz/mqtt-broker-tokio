@@ -310,6 +310,7 @@ impl BrokerManager {
         let (
             client_id,
             user_name,
+            password,
             session_expiry_interval,
             need_keep,
             session_present,
@@ -345,6 +346,7 @@ impl BrokerManager {
                             connect.client_id().to_string()
                         };
                         let user_name = connect.user_name().map(|s| s.to_string());
+                        let password = connect.password().and_then(|p| String::from_utf8(p.to_vec()).ok());
                         trace!(
                             "MQTT v3.1.1 client {extracted_id} connected, clean_session={clean_session}"
                         );
@@ -381,6 +383,7 @@ impl BrokerManager {
                         (
                             extracted_id,
                             user_name,
+                            password,
                             session_expiry_interval,
                             need_keep,
                             session_present,
@@ -402,6 +405,7 @@ impl BrokerManager {
                             None
                         };
                         let user_name = connect.user_name().map(|s| s.to_string());
+                        let password = connect.password().and_then(|p| String::from_utf8(p.to_vec()).ok());
                         let clean_start = connect.clean_start();
 
                         // Extract SessionExpiryInterval from properties (default: 0)
@@ -450,6 +454,7 @@ impl BrokerManager {
                         (
                             extracted_id,
                             user_name,
+                            password,
                             session_expiry_interval,
                             need_keep,
                             session_present,
@@ -473,8 +478,60 @@ impl BrokerManager {
         let endpoint_arc = Arc::new(endpoint);
         let _endpoint_ref = EndpointRef::new(endpoint_arc.clone());
 
-        // Create session ID
-        let session_id = SessionId::new(user_name, client_id.clone());
+        // Authenticate user if security is configured
+        let authenticated_username = if let Some(ref sec) = security {
+            match (user_name.as_ref(), password.as_ref()) {
+                (Some(username), Some(pwd)) => {
+                    // Authenticate with username and password
+                    if let Some(auth_user) = sec.login(username, pwd) {
+                        trace!("User {username} authenticated successfully");
+                        Some(auth_user)
+                    } else {
+                        error!("Authentication failed for user {username}");
+                        // Send NotAuthorized CONNACK
+                        Self::send_connack_not_authorized(&endpoint_arc, &client_id).await;
+                        return None;
+                    }
+                }
+                (Some(username), None) => {
+                    // Username provided but no password - try client certificate
+                    if sec.login_cert(username) {
+                        trace!("User {username} authenticated with client certificate");
+                        Some(username.clone())
+                    } else {
+                        error!("Client certificate authentication failed for user {username}");
+                        // Send NotAuthorized CONNACK
+                        Self::send_connack_not_authorized(&endpoint_arc, &client_id).await;
+                        return None;
+                    }
+                }
+                (None, None) => {
+                    // No username/password - try anonymous
+                    if let Some(anon_user) = sec.login_anonymous() {
+                        trace!("Anonymous user {anon_user} authenticated");
+                        Some(anon_user.to_string())
+                    } else {
+                        error!("Anonymous authentication not configured");
+                        // Send NotAuthorized CONNACK
+                        Self::send_connack_not_authorized(&endpoint_arc, &client_id).await;
+                        return None;
+                    }
+                }
+                (None, Some(_)) => {
+                    // Password without username - not allowed
+                    error!("Password provided without username");
+                    // Send NotAuthorized CONNACK
+                    Self::send_connack_not_authorized(&endpoint_arc, &client_id).await;
+                    return None;
+                }
+            }
+        } else {
+            // No security configured - allow all connections
+            user_name.clone()
+        };
+
+        // Create session ID with authenticated username
+        let session_id = SessionId::new(authenticated_username, client_id.clone());
 
         // Handle session creation or restoration
         let session = if session_present && !clean_start_or_session {
@@ -570,6 +627,7 @@ impl BrokerManager {
                         &subscription_store,
                         &retained_store,
                         &session_store,
+                        &security,
                         &subscription_tx,
                         &endpoint_arc,
                         &session_ref,
@@ -618,6 +676,7 @@ impl BrokerManager {
         subscription_store: &Arc<SubscriptionStore>,
         retained_store: &Arc<RetainedStore>,
         session_store: &Arc<SessionStore>,
+        security: &Option<Arc<Security>>,
         subscription_tx: &mpsc::Sender<SubscriptionMessage>,
         endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
         session_ref: &SessionRef,
@@ -628,6 +687,7 @@ impl BrokerManager {
                     sub.packet_id(),
                     sub.entries(),
                     Vec::new(),
+                    security,
                     subscription_tx,
                     endpoint,
                     session_ref,
@@ -642,6 +702,7 @@ impl BrokerManager {
                     sub.packet_id(),
                     sub.entries(),
                     sub.props().to_vec(),
+                    security,
                     subscription_tx,
                     endpoint,
                     session_ref,
@@ -924,6 +985,43 @@ impl BrokerManager {
 
         trace!("CONNACK (session_present=false) sent to client {client_id}");
         Ok(())
+    }
+
+    /// Send CONNACK with NotAuthorized reason code (authentication failed)
+    async fn send_connack_not_authorized(
+        endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
+        client_id: &str,
+    ) {
+        let endpoint_version = endpoint
+            .get_protocol_version()
+            .await
+            .unwrap_or(mqtt_ep::Version::V5_0);
+
+        match endpoint_version {
+            mqtt_ep::Version::V3_1_1 => {
+                let connack = mqtt_ep::packet::v3_1_1::Connack::builder()
+                    .session_present(false)
+                    .return_code(mqtt_ep::result_code::ConnectReturnCode::NotAuthorized)
+                    .build()
+                    .unwrap();
+                trace!("Sending CONNACK (NotAuthorized) to client {client_id}");
+                let _ = endpoint.send(connack).await;
+            }
+            mqtt_ep::Version::V5_0 => {
+                let connack = mqtt_ep::packet::v5_0::Connack::builder()
+                    .session_present(false)
+                    .reason_code(mqtt_ep::result_code::ConnectReasonCode::NotAuthorized)
+                    .build()
+                    .unwrap();
+                trace!("Sending CONNACK (NotAuthorized) to client {client_id}");
+                let _ = endpoint.send(connack).await;
+            }
+            _ => {
+                error!("Unsupported MQTT version for NotAuthorized CONNACK");
+            }
+        }
+
+        trace!("CONNACK (NotAuthorized) sent to client {client_id}");
     }
 
     /// Send offline messages to endpoint

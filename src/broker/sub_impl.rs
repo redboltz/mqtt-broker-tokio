@@ -6,6 +6,7 @@
 
 use super::BrokerManager;
 use super::SubscriptionMessage;
+use crate::auth_impl::{AuthorizationType, Security};
 use crate::retained_store::RetainedStore;
 use crate::session_store::{SessionRef, SessionStore};
 use crate::subscription_store::SubscriptionStore;
@@ -13,7 +14,7 @@ use mqtt_endpoint_tokio::mqtt_ep;
 use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
-use tracing::trace;
+use tracing::{error, trace};
 
 impl BrokerManager {
     /// Handle SUBSCRIBE in endpoint task (unified for both v3.1.1 and v5.0)
@@ -22,6 +23,7 @@ impl BrokerManager {
         packet_id: u16,
         entries: &[mqtt_ep::packet::SubEntry],
         props: Vec<mqtt_ep::packet::Property>,
+        security: &Option<Arc<Security>>,
         subscription_tx: &mpsc::Sender<SubscriptionMessage>,
         endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
         session_ref: &SessionRef,
@@ -77,37 +79,108 @@ impl BrokerManager {
                 ));
             }
 
-            topic_filters.push((topic_filter.clone(), qos, rap, nl));
-            trace!(
-                "SUBSCRIBE: endpoint wants to subscribe to '{topic_filter}' with QoS {qos:?}, RH={rh:?}, RAP={rap}, NL={nl}"
-            );
-            entry_info.push((topic_filter, qos, rh, rap, nl, is_shared));
+            // Check authorization if security is configured
+            let authorized = if let Some(ref sec) = security {
+                // Get username from session_ref
+                if let Some(ref username) = session_ref.session_id.user_name {
+                    let auth_result = sec.auth_sub(&topic_filter, username);
+                    match auth_result {
+                        AuthorizationType::Allow => {
+                            trace!(
+                                "Authorization: user '{username}' allowed to subscribe to '{topic_filter}'"
+                            );
+                            true
+                        }
+                        AuthorizationType::Deny => {
+                            error!(
+                                "Authorization: user '{username}' denied to subscribe to '{topic_filter}'"
+                            );
+                            false
+                        }
+                        AuthorizationType::None => {
+                            error!(
+                                "Authorization: no rule found for user '{username}' on '{topic_filter}', denying by default"
+                            );
+                            false
+                        }
+                    }
+                } else {
+                    error!("Authorization: no username in session, denying subscription to '{topic_filter}'");
+                    false
+                }
+            } else {
+                // No security configured, allow all
+                true
+            };
+
+            if authorized {
+                topic_filters.push((topic_filter.clone(), qos, rap, nl));
+                trace!(
+                    "SUBSCRIBE: endpoint wants to subscribe to '{topic_filter}' with QoS {qos:?}, RH={rh:?}, RAP={rap}, NL={nl}"
+                );
+            } else {
+                // Don't add to topic_filters for unauthorized subscriptions
+                trace!(
+                    "SUBSCRIBE: subscription to '{topic_filter}' denied by authorization"
+                );
+            }
+            entry_info.push((topic_filter, qos, rh, rap, nl, is_shared, authorized));
         }
 
-        // Send to subscription manager and wait for response
-        let (response_tx, response_rx) = oneshot::channel();
-        subscription_tx
-            .send(SubscriptionMessage::Subscribe {
-                session_ref: session_ref.clone(),
-                topics: topic_filters,
-                sub_id,
-                response_tx,
-            })
-            .await?;
+        // Send to subscription manager and wait for response (only for authorized subscriptions)
+        let return_codes_with_is_new = if !topic_filters.is_empty() {
+            let (response_tx, response_rx) = oneshot::channel();
+            subscription_tx
+                .send(SubscriptionMessage::Subscribe {
+                    session_ref: session_ref.clone(),
+                    topics: topic_filters,
+                    sub_id,
+                    response_tx,
+                })
+                .await?;
+            response_rx.await?
+        } else {
+            Vec::new()
+        };
 
-        let return_codes_with_is_new = response_rx.await?;
+        // Build return codes for SUBACK based on authorization and subscription results
+        let mut return_codes = Vec::new();
+        let mut subscription_results_iter = return_codes_with_is_new.iter();
 
-        // Extract return codes for SUBACK
-        let return_codes: Vec<_> = return_codes_with_is_new.iter().map(|(rc, _)| *rc).collect();
+        for (_topic_filter, _qos, _rh, _rap, _nl, _is_shared, authorized) in &entry_info {
+            if *authorized {
+                // Get result from subscription manager
+                if let Some((rc, _is_new)) = subscription_results_iter.next() {
+                    return_codes.push(*rc);
+                } else {
+                    // Should not happen, but handle gracefully
+                    return_codes.push(mqtt_ep::result_code::SubackReturnCode::Failure);
+                }
+            } else {
+                // Unauthorized subscription - return Failure
+                return_codes.push(mqtt_ep::result_code::SubackReturnCode::Failure);
+            }
+        }
 
         // Send SUBACK using the unified function
         // Note: SUBACK should not include SubscriptionIdentifier property from SUBSCRIBE
         Self::send_suback(endpoint, packet_id, return_codes, Vec::new()).await?;
 
         // Send retained messages based on Retain Handling (RH)
-        for ((topic_filter, sub_qos, rh, _rap, _nl, is_shared), (_rc, is_new)) in
-            entry_info.iter().zip(return_codes_with_is_new.iter())
-        {
+        let mut subscription_results_iter = return_codes_with_is_new.iter();
+        for (topic_filter, sub_qos, rh, _rap, _nl, is_shared, authorized) in &entry_info {
+            // Skip if not authorized
+            if !authorized {
+                continue;
+            }
+
+            // Get subscription result
+            let (_rc, is_new) = if let Some(result) = subscription_results_iter.next() {
+                result
+            } else {
+                // Should not happen
+                continue;
+            };
             // Skip if shared subscription
             if *is_shared {
                 continue;

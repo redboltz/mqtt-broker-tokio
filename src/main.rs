@@ -27,12 +27,14 @@ mod shared_subscription_manager;
 mod subscription_store;
 mod tracing_setup;
 
+use auth_impl::Security;
 use broker::BrokerManager;
 use clap::Parser;
 use futures::future;
 use mqtt_endpoint_tokio::mqtt_ep;
 use std::fs::File;
 use std::io::BufReader;
+use std::path::Path;
 use std::sync::Arc;
 use tokio_rustls::{TlsAcceptor, rustls};
 use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
@@ -40,7 +42,7 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tracing_setup::init_tracing;
 
 use socket2::SockRef;
-use tracing::{error, info, trace};
+use tracing::{error, info, trace, warn};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -118,6 +120,10 @@ struct Args {
     /// TCP keepalive time in seconds (0 to disable)
     #[arg(long)]
     socket_keepalive_time: Option<u32>,
+
+    /// Path to authentication/authorization configuration file (JSON5 format with comments support)
+    #[arg(long, default_value = "auth.json")]
+    auth_file: String,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -413,7 +419,30 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
         }
     }
 
-    let broker = BrokerManager::new(args.ep_recv_buf_size).await?;
+    // Load authentication/authorization configuration if auth file exists
+    let broker = if Path::new(&args.auth_file).exists() {
+        info!("Loading authentication/authorization configuration from: {}", args.auth_file);
+        match Security::load_json(&args.auth_file) {
+            Ok(security) => {
+                info!("Authentication/authorization configuration loaded successfully");
+                BrokerManager::new_with_security(args.ep_recv_buf_size, security).await?
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "Failed to load authentication/authorization configuration from '{}': {}",
+                    args.auth_file,
+                    e
+                ));
+            }
+        }
+    } else {
+        warn!(
+            "Authentication/authorization file '{}' not found. Running without authentication/authorization.",
+            args.auth_file
+        );
+        BrokerManager::new(args.ep_recv_buf_size).await?
+    };
+
     let mut tasks = Vec::new();
 
     // TCP listener
