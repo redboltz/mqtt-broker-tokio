@@ -654,6 +654,27 @@ impl BrokerManager {
                 .await?;
             }
             mqtt_ep::packet::Packet::V5_0Publish(pub_packet) => {
+                // v5.0: Check for SubscriptionIdentifier in PUBLISH from client (Protocol Error)
+                // MQTT spec: SubscriptionIdentifier is only sent from Server to Client, never from Client to Server
+                let has_sub_id = pub_packet.props().iter().any(|prop| {
+                    matches!(prop, mqtt_ep::packet::Property::SubscriptionIdentifier(_))
+                });
+
+                if has_sub_id {
+                    error!(
+                        "Protocol Error: Client {client_id} sent PUBLISH with SubscriptionIdentifier property"
+                    );
+                    // Send DISCONNECT with ProtocolError reason code
+                    let disconnect = mqtt_ep::packet::v5_0::Disconnect::builder()
+                        .reason_code(mqtt_ep::result_code::DisconnectReasonCode::ProtocolError)
+                        .build()
+                        .unwrap();
+                    let _ = endpoint.send(disconnect).await;
+                    return Err(anyhow::anyhow!(
+                        "Protocol Error: PUBLISH contains SubscriptionIdentifier"
+                    ));
+                }
+
                 Self::handle_publish(
                     endpoint,
                     pub_packet.packet_id().unwrap_or(0),

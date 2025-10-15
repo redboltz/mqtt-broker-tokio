@@ -1095,3 +1095,56 @@ async fn test_pubsub_multiple_subscriptions_with_sub_id_v5_0() {
     assert_eq!(received_messages[1], Some(1)); // Second subscription had sub_id 1
     assert_eq!(received_messages[2], Some(2)); // Third subscription had sub_id 2
 }
+
+/// Test: Protocol violation - Client sends PUBLISH with SubscriptionIdentifier
+#[tokio::test]
+async fn test_protocol_error_subscription_identifier_in_publish_v5_0() {
+    let broker = BrokerProcess::start();
+    broker.wait_ready().await;
+
+    // Create publisher endpoint
+    let publisher = create_connected_endpoint("publisher", broker.port()).await;
+
+    // Try to publish with SubscriptionIdentifier property (Protocol Error)
+    // MQTT spec: SubscriptionIdentifier is only sent from Server to Client, never from Client to Server
+    let publish = mqtt_ep::packet::v5_0::Publish::builder()
+        .topic_name("test/topic")
+        .expect("Failed to set topic_name")
+        .qos(mqtt_ep::packet::Qos::AtMostOnce)
+        .payload(b"test message".to_vec())
+        .props(vec![mqtt_ep::packet::Property::SubscriptionIdentifier(
+            mqtt_ep::packet::SubscriptionIdentifier::new(123).unwrap(),
+        )])
+        .build()
+        .expect("Failed to build PUBLISH");
+
+    publisher
+        .send(publish)
+        .await
+        .expect("Failed to send PUBLISH");
+
+    // Should receive DISCONNECT with ProtocolError
+    let packet = publisher
+        .recv()
+        .await
+        .expect("Failed to receive DISCONNECT");
+
+    match packet {
+        mqtt_ep::packet::Packet::V5_0Disconnect(disconnect) => {
+            assert_eq!(
+                disconnect.reason_code(),
+                Some(mqtt_ep::result_code::DisconnectReasonCode::ProtocolError),
+                "Expected ProtocolError for PUBLISH with SubscriptionIdentifier"
+            );
+            println!("✅ Correctly received DISCONNECT with ProtocolError");
+        }
+        _ => panic!("Expected DISCONNECT, got {packet:?}"),
+    }
+
+    // Connection should be closed after DISCONNECT
+    let result = publisher.recv().await;
+    assert!(
+        result.is_err(),
+        "Connection should be closed after ProtocolError"
+    );
+}
