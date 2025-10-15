@@ -585,7 +585,8 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
         let key_path = args.server_key.as_ref().unwrap();
         let acceptor = load_tls_acceptor(cert_path, key_path)?;
         let bind_addr: std::net::SocketAddr = format!("0.0.0.0:{port}").parse()?;
-        let ws_tls_listener = create_tcp_listener(bind_addr, args.socket_reuseport.unwrap_or(false))?;
+        let ws_tls_listener =
+            create_tcp_listener(bind_addr, args.socket_reuseport.unwrap_or(false))?;
         info!("Listening on WebSocket+TLS port {port} for MQTT (dual-version support)");
 
         let broker_clone = broker.clone();

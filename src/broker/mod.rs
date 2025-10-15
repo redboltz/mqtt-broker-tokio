@@ -273,18 +273,44 @@ impl BrokerManager {
         trace!("Starting endpoint task (waiting for CONNECT)");
 
         // First, wait for CONNECT packet
-        let (client_id, user_name, session_expiry_interval, need_keep, session_present, clean_start_or_session) = match endpoint.recv().await {
+        let (
+            client_id,
+            user_name,
+            session_expiry_interval,
+            need_keep,
+            session_present,
+            clean_start_or_session,
+            assigned_client_id,
+        ) = match endpoint.recv().await {
             Ok(packet) => {
                 trace!("🔍 Received first packet: {:?}", packet.packet_type());
                 match &packet {
                     mqtt_ep::packet::Packet::V3_1_1Connect(connect) => {
-                        let extracted_id = if connect.client_id().is_empty() {
+                        let clean_session = connect.clean_session();
+                        let client_id_empty = connect.client_id().is_empty();
+
+                        // v3.1.1: If clean_session=false and ClientId is empty, reject with IdentifierRejected
+                        if !clean_session && client_id_empty {
+                            error!(
+                                "MQTT v3.1.1 client with empty ClientId and clean_session=false rejected"
+                            );
+                            let connack = mqtt_ep::packet::v3_1_1::Connack::builder()
+                                .session_present(false)
+                                .return_code(
+                                    mqtt_ep::result_code::ConnectReturnCode::IdentifierRejected,
+                                )
+                                .build()
+                                .unwrap();
+                            let _ = endpoint.send(connack).await;
+                            return None;
+                        }
+
+                        let extracted_id = if client_id_empty {
                             format!("auto-{}", Uuid::new_v4().simple())
                         } else {
                             connect.client_id().to_string()
                         };
                         let user_name = connect.user_name().map(|s| s.to_string());
-                        let clean_session = connect.clean_session();
                         trace!(
                             "MQTT v3.1.1 client {extracted_id} connected, clean_session={clean_session}"
                         );
@@ -317,13 +343,29 @@ impl BrokerManager {
                             "Session takeover complete for {extracted_id}, session_present={session_present}"
                         );
 
-                        (extracted_id, user_name, session_expiry_interval, need_keep, session_present, clean_session)
+                        // v3.1.1 doesn't use Assigned Client Identifier property
+                        (
+                            extracted_id,
+                            user_name,
+                            session_expiry_interval,
+                            need_keep,
+                            session_present,
+                            clean_session,
+                            None,
+                        )
                     }
                     mqtt_ep::packet::Packet::V5_0Connect(connect) => {
-                        let extracted_id = if connect.client_id().is_empty() {
+                        let client_id_empty = connect.client_id().is_empty();
+                        let extracted_id = if client_id_empty {
                             format!("auto-{}", Uuid::new_v4().simple())
                         } else {
                             connect.client_id().to_string()
+                        };
+                        // v5.0: If ClientId was empty, need to return Assigned Client Identifier
+                        let assigned_client_id = if client_id_empty {
+                            Some(extracted_id.clone())
+                        } else {
+                            None
                         };
                         let user_name = connect.user_name().map(|s| s.to_string());
                         let clean_start = connect.clean_start();
@@ -371,7 +413,15 @@ impl BrokerManager {
                             "Session takeover complete for {extracted_id}, session_present={session_present}"
                         );
 
-                        (extracted_id, user_name, session_expiry_interval, need_keep, session_present, clean_start)
+                        (
+                            extracted_id,
+                            user_name,
+                            session_expiry_interval,
+                            need_keep,
+                            session_present,
+                            clean_start,
+                            assigned_client_id,
+                        )
                     }
                     _ => {
                         error!("Expected CONNECT packet, received: {packet:?}");
@@ -415,12 +465,9 @@ impl BrokerManager {
             };
 
             // Send CONNACK with session_present=true
-            if let Err(e) = Self::send_connack_for_restore(
-                &endpoint_arc,
-                &client_id,
-                session_expiry_interval,
-            )
-            .await
+            if let Err(e) =
+                Self::send_connack_for_restore(&endpoint_arc, &client_id, session_expiry_interval)
+                    .await
             {
                 error!("Failed to send CONNACK for {client_id}: {e}");
                 return None;
@@ -442,9 +489,13 @@ impl BrokerManager {
             trace!("Creating new session for client {client_id}");
 
             // Send CONNACK with session_present=false
-            if let Err(e) =
-                Self::send_connack_for_new(&endpoint_arc, &client_id, session_expiry_interval)
-                    .await
+            if let Err(e) = Self::send_connack_for_new(
+                &endpoint_arc,
+                &client_id,
+                session_expiry_interval,
+                assigned_client_id.as_deref(),
+            )
+            .await
             {
                 error!("Failed to send CONNACK for {client_id}: {e}");
                 return None;
@@ -770,6 +821,7 @@ impl BrokerManager {
         endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
         client_id: &str,
         _session_expiry_interval: u32,
+        assigned_client_id: Option<&str>,
     ) -> anyhow::Result<()> {
         let endpoint_version = endpoint
             .get_protocol_version()
@@ -787,12 +839,25 @@ impl BrokerManager {
                 endpoint.send(connack).await?;
             }
             mqtt_ep::Version::V5_0 => {
-                let connack = mqtt_ep::packet::v5_0::Connack::builder()
+                let mut builder = mqtt_ep::packet::v5_0::Connack::builder()
                     .session_present(false)
-                    .reason_code(mqtt_ep::result_code::ConnectReasonCode::Success)
-                    .build()
-                    .unwrap();
-                trace!("Sending CONNACK (session_present=false) to client {client_id}");
+                    .reason_code(mqtt_ep::result_code::ConnectReasonCode::Success);
+
+                // Add Assigned Client Identifier property if ClientId was auto-assigned
+                if let Some(assigned_id) = assigned_client_id {
+                    builder =
+                        builder.props(vec![mqtt_ep::packet::Property::AssignedClientIdentifier(
+                            mqtt_ep::packet::AssignedClientIdentifier::new(assigned_id)
+                                .expect("Failed to create AssignedClientIdentifier"),
+                        )]);
+                    trace!(
+                        "Sending CONNACK (session_present=false) with assigned ClientId '{assigned_id}' to client {client_id}"
+                    );
+                } else {
+                    trace!("Sending CONNACK (session_present=false) to client {client_id}");
+                }
+
+                let connack = builder.build().unwrap();
                 endpoint.send(connack).await?;
             }
             _ => {

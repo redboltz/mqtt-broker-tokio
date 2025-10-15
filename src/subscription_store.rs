@@ -108,7 +108,6 @@ impl std::fmt::Debug for EndpointRef {
     }
 }
 
-
 /// Trie node containing subscription information
 #[derive(Debug, Clone, Default)]
 struct TrieNode {
