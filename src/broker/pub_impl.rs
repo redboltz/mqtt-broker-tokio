@@ -262,6 +262,7 @@ impl BrokerManager {
         subscription_store: &Arc<SubscriptionStore>,
         retained_store: &Arc<RetainedStore>,
         session_store: &Arc<SessionStore>,
+        publisher_session_ref: &crate::session_store::SessionRef,
     ) -> anyhow::Result<()> {
         // Convert to ArcPayload early for retained message storage
         let arc_payload = payload.into_payload();
@@ -293,6 +294,17 @@ impl BrokerManager {
         if has_subscribers {
             // Send to subscribers sequentially (each endpoint.send() queues via mpsc)
             for subscription in subscriptions {
+                // NoLocal check: if nl=true and publisher_session == subscriber_session, skip
+                if subscription.nl
+                    && subscription.session_ref.session_id == publisher_session_ref.session_id
+                {
+                    trace!(
+                        "Skipping PUBLISH delivery to subscriber due to NoLocal: topic='{topic}', session={:?}",
+                        subscription.session_ref.session_id
+                    );
+                    continue;
+                }
+
                 // QoS arbitration: use the lower of publish QoS and subscription QoS
                 let effective_qos = qos.min(subscription.qos);
 

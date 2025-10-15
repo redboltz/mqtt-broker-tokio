@@ -36,7 +36,13 @@ impl BrokerManager {
         });
 
         let mut topic_filters = Vec::new();
-        let mut entry_info = Vec::new(); // Store (topic_filter, qos, rh, rap, is_shared)
+        let mut entry_info = Vec::new(); // Store (topic_filter, qos, rh, rap, nl, is_shared)
+
+        // Get endpoint version to determine if nl should be extracted
+        let endpoint_version = endpoint
+            .get_protocol_version()
+            .await
+            .unwrap_or(mqtt_ep::Version::V5_0);
 
         for entry in entries {
             let topic_filter = entry.topic_filter().to_string();
@@ -46,13 +52,36 @@ impl BrokerManager {
             let rh = sub_opts.rh();
             // Get Retain As Published from sub_opts
             let rap = sub_opts.rap();
+            // Get No Local from sub_opts (v5.0 only, always false for v3.1.1)
+            let nl = if endpoint_version == mqtt_ep::Version::V5_0 {
+                sub_opts.nl()
+            } else {
+                false
+            };
             let is_shared = topic_filter.starts_with("$share/");
 
-            topic_filters.push((topic_filter.clone(), qos, rap));
+            // MQTT v5.0 spec [MQTT-3.8.3-4]: Protocol Error if SharedSubscription + nl=true
+            if is_shared && nl {
+                use tracing::error;
+                error!(
+                    "Protocol Error: Client sent SUBSCRIBE with SharedSubscription ('{topic_filter}') and NoLocal=true"
+                );
+                // Send DISCONNECT with ProtocolError reason code
+                let disconnect = mqtt_ep::packet::v5_0::Disconnect::builder()
+                    .reason_code(mqtt_ep::result_code::DisconnectReasonCode::ProtocolError)
+                    .build()
+                    .unwrap();
+                let _ = endpoint.send(disconnect).await;
+                return Err(anyhow::anyhow!(
+                    "Protocol Error: SharedSubscription with NoLocal=true"
+                ));
+            }
+
+            topic_filters.push((topic_filter.clone(), qos, rap, nl));
             trace!(
-                "SUBSCRIBE: endpoint wants to subscribe to '{topic_filter}' with QoS {qos:?}, RH={rh:?}, RAP={rap}"
+                "SUBSCRIBE: endpoint wants to subscribe to '{topic_filter}' with QoS {qos:?}, RH={rh:?}, RAP={rap}, NL={nl}"
             );
-            entry_info.push((topic_filter, qos, rh, rap, is_shared));
+            entry_info.push((topic_filter, qos, rh, rap, nl, is_shared));
         }
 
         // Send to subscription manager and wait for response
@@ -76,7 +105,7 @@ impl BrokerManager {
         Self::send_suback(endpoint, packet_id, return_codes, Vec::new()).await?;
 
         // Send retained messages based on Retain Handling (RH)
-        for ((topic_filter, sub_qos, rh, _rap, is_shared), (_rc, is_new)) in
+        for ((topic_filter, sub_qos, rh, _rap, _nl, is_shared), (_rc, is_new)) in
             entry_info.iter().zip(return_codes_with_is_new.iter())
         {
             // Skip if shared subscription

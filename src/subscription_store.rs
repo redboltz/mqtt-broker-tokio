@@ -47,7 +47,7 @@ impl std::error::Error for SubscriptionError {}
 
 pub type ClientId = String;
 
-/// Subscription information containing session reference, QoS, topic filter, subscription ID, and RAP flag
+/// Subscription information containing session reference, QoS, topic filter, subscription ID, RAP flag, and NL flag
 #[derive(Debug, Clone)]
 pub struct Subscription {
     pub session_ref: SessionRef,
@@ -55,6 +55,7 @@ pub struct Subscription {
     pub topic_filter: String,
     pub sub_id: Option<u32>,
     pub rap: bool, // Retain As Published flag
+    pub nl: bool,  // No Local flag (v5.0 only, false for v3.1.1)
 }
 
 /// Wrapper for Arc<Endpoint> that uses pointer-based comparison and hashing
@@ -169,6 +170,7 @@ impl SubscriptionStore {
         qos: mqtt_ep::packet::Qos,
         sub_id: Option<u32>,
         rap: bool,
+        nl: bool,
     ) -> Result<bool, SubscriptionError> {
         // Check if this is a shared subscription
         if let Some((share_name, actual_filter)) = Self::parse_shared_subscription(topic_filter) {
@@ -187,6 +189,7 @@ impl SubscriptionStore {
                     topic_filter: actual_filter.clone(),
                     sub_id,
                     rap,
+                    nl,
                 },
             );
 
@@ -210,6 +213,7 @@ impl SubscriptionStore {
                 qos,
                 sub_id,
                 rap,
+                nl,
                 0,
             );
 
@@ -231,6 +235,7 @@ impl SubscriptionStore {
         qos: mqtt_ep::packet::Qos,
         sub_id: Option<u32>,
         rap: bool,
+        nl: bool,
         depth: usize,
     ) -> bool {
         if depth >= segments.len() {
@@ -242,6 +247,7 @@ impl SubscriptionStore {
                 qos,
                 sub_id,
                 rap,
+                nl,
             );
         }
 
@@ -257,6 +263,7 @@ impl SubscriptionStore {
                     qos,
                     sub_id,
                     rap,
+                    nl,
                 )
             }
             "+" => {
@@ -274,6 +281,7 @@ impl SubscriptionStore {
                             qos,
                             sub_id,
                             rap,
+                            nl,
                         )
                     } else {
                         Self::insert_subscription(
@@ -284,6 +292,7 @@ impl SubscriptionStore {
                             qos,
                             sub_id,
                             rap,
+                            nl,
                             depth + 1,
                         )
                     }
@@ -305,6 +314,7 @@ impl SubscriptionStore {
                     qos,
                     sub_id,
                     rap,
+                    nl,
                     depth + 1,
                 )
             }
@@ -320,16 +330,18 @@ impl SubscriptionStore {
         qos: mqtt_ep::packet::Qos,
         sub_id: Option<u32>,
         rap: bool,
+        nl: bool,
     ) -> bool {
         // Find existing subscription with same session_ref and topic_filter
         if let Some(existing) = subscribers
             .iter_mut()
             .find(|s| s.session_ref == session_ref && s.topic_filter == topic_filter)
         {
-            // Update existing subscription (QoS, sub_id, and rap overwrite)
+            // Update existing subscription (QoS, sub_id, rap, and nl overwrite)
             existing.qos = qos;
             existing.sub_id = sub_id;
             existing.rap = rap;
+            existing.nl = nl;
             false // Not a new subscription
         } else {
             // Add new subscription
@@ -339,6 +351,7 @@ impl SubscriptionStore {
                 topic_filter: topic_filter.to_string(),
                 sub_id,
                 rap,
+                nl,
             });
             true // New subscription
         }
@@ -478,6 +491,7 @@ impl SubscriptionStore {
                 topic_filter: details.topic_filter,
                 sub_id: details.sub_id,
                 rap: details.rap,
+                nl: details.nl,
             });
 
             trace!("Shared subscription match: topic '{topic}' matched with LRU selection");

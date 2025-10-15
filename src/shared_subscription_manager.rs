@@ -21,6 +21,7 @@ pub struct SubscriptionDetails {
     pub topic_filter: String,
     pub sub_id: Option<u32>,
     pub rap: bool,
+    pub nl: bool,
 }
 
 /// Entry for each client in a share group
@@ -339,6 +340,7 @@ mod tests {
             topic_filter: String::new(),
             sub_id: None,
             rap: false,
+            nl: false,
         }
     }
 

@@ -1148,3 +1148,194 @@ async fn test_protocol_error_subscription_identifier_in_publish_v5_0() {
         "Connection should be closed after ProtocolError"
     );
 }
+
+/// Test: NoLocal flag = true prevents loopback delivery
+#[tokio::test]
+async fn test_nolocal_true_v5_0() {
+    let broker = BrokerProcess::start();
+    broker.wait_ready().await;
+
+    // Create a single client that will both subscribe and publish
+    let client = create_connected_endpoint("client", broker.port()).await;
+
+    // Subscribe with NoLocal=true
+    let packet_id = client
+        .acquire_packet_id()
+        .await
+        .expect("Failed to acquire packet_id");
+    let sub_opts = mqtt_ep::packet::SubOpts::new()
+        .set_qos(mqtt_ep::packet::Qos::AtMostOnce)
+        .set_nl(true); // NoLocal = true
+    let sub_entry =
+        mqtt_ep::packet::SubEntry::new("test/topic", sub_opts).expect("Failed to create SubEntry");
+    let subscribe = mqtt_ep::packet::v5_0::Subscribe::builder()
+        .packet_id(packet_id)
+        .entries(vec![sub_entry])
+        .build()
+        .expect("Failed to build SUBSCRIBE");
+
+    client
+        .send(subscribe)
+        .await
+        .expect("Failed to send SUBSCRIBE");
+
+    // Receive SUBACK
+    let packet = client.recv().await.expect("Failed to receive SUBACK");
+    match packet {
+        mqtt_ep::packet::Packet::V5_0Suback(suback) => {
+            assert_eq!(
+                suback.reason_codes()[0],
+                mqtt_ep::result_code::SubackReasonCode::GrantedQos0
+            );
+        }
+        _ => panic!("Expected SUBACK, got {packet:?}"),
+    }
+
+    // Publish to the same topic from the same client
+    let publish = mqtt_ep::packet::v5_0::Publish::builder()
+        .topic_name("test/topic")
+        .expect("Failed to set topic_name")
+        .qos(mqtt_ep::packet::Qos::AtMostOnce)
+        .payload(b"loopback test".to_vec())
+        .build()
+        .expect("Failed to build PUBLISH");
+
+    client.send(publish).await.expect("Failed to send PUBLISH");
+
+    // Client should NOT receive the published message (NoLocal prevents loopback)
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // Try to receive - should timeout or get nothing
+    let result = tokio::time::timeout(tokio::time::Duration::from_millis(200), client.recv()).await;
+
+    assert!(
+        result.is_err(),
+        "Client should NOT receive loopback message with NoLocal=true"
+    );
+    println!("✅ NoLocal=true correctly prevented loopback delivery");
+}
+
+/// Test: NoLocal flag = false allows loopback delivery
+#[tokio::test]
+async fn test_nolocal_false_v5_0() {
+    let broker = BrokerProcess::start();
+    broker.wait_ready().await;
+
+    // Create a single client that will both subscribe and publish
+    let client = create_connected_endpoint("client", broker.port()).await;
+
+    // Subscribe with NoLocal=false (default)
+    let packet_id = client
+        .acquire_packet_id()
+        .await
+        .expect("Failed to acquire packet_id");
+    let sub_opts = mqtt_ep::packet::SubOpts::new()
+        .set_qos(mqtt_ep::packet::Qos::AtMostOnce)
+        .set_nl(false); // NoLocal = false (explicit)
+    let sub_entry =
+        mqtt_ep::packet::SubEntry::new("test/topic", sub_opts).expect("Failed to create SubEntry");
+    let subscribe = mqtt_ep::packet::v5_0::Subscribe::builder()
+        .packet_id(packet_id)
+        .entries(vec![sub_entry])
+        .build()
+        .expect("Failed to build SUBSCRIBE");
+
+    client
+        .send(subscribe)
+        .await
+        .expect("Failed to send SUBSCRIBE");
+
+    // Receive SUBACK
+    let packet = client.recv().await.expect("Failed to receive SUBACK");
+    match packet {
+        mqtt_ep::packet::Packet::V5_0Suback(suback) => {
+            assert_eq!(
+                suback.reason_codes()[0],
+                mqtt_ep::result_code::SubackReasonCode::GrantedQos0
+            );
+        }
+        _ => panic!("Expected SUBACK, got {packet:?}"),
+    }
+
+    // Publish to the same topic from the same client
+    let publish = mqtt_ep::packet::v5_0::Publish::builder()
+        .topic_name("test/topic")
+        .expect("Failed to set topic_name")
+        .qos(mqtt_ep::packet::Qos::AtMostOnce)
+        .payload(b"loopback test".to_vec())
+        .build()
+        .expect("Failed to build PUBLISH");
+
+    client.send(publish).await.expect("Failed to send PUBLISH");
+
+    // Client SHOULD receive the published message (NoLocal=false allows loopback)
+    let packet = client
+        .recv()
+        .await
+        .expect("Failed to receive loopback PUBLISH");
+
+    match packet {
+        mqtt_ep::packet::Packet::V5_0Publish(publish) => {
+            assert_eq!(publish.topic_name(), "test/topic");
+            assert_eq!(publish.payload().as_slice(), b"loopback test");
+            println!("✅ NoLocal=false correctly allowed loopback delivery");
+        }
+        _ => panic!("Expected PUBLISH, got {packet:?}"),
+    }
+}
+
+/// Test: Protocol Error - SharedSubscription with NoLocal=true
+#[tokio::test]
+async fn test_protocol_error_shared_subscription_with_nolocal_v5_0() {
+    let broker = BrokerProcess::start();
+    broker.wait_ready().await;
+
+    // Create a client
+    let client = create_connected_endpoint("client", broker.port()).await;
+
+    // Try to subscribe to SharedSubscription with NoLocal=true (Protocol Error)
+    // MQTT v5.0 spec [MQTT-3.8.3-4]: It is a Protocol Error to set the No Local bit to 1 on a Shared Subscription
+    let packet_id = client
+        .acquire_packet_id()
+        .await
+        .expect("Failed to acquire packet_id");
+    let sub_opts = mqtt_ep::packet::SubOpts::new()
+        .set_qos(mqtt_ep::packet::Qos::AtMostOnce)
+        .set_nl(true); // NoLocal = true (Protocol Error with SharedSubscription)
+    let sub_entry = mqtt_ep::packet::SubEntry::new("$share/group1/test/topic", sub_opts)
+        .expect("Failed to create SubEntry");
+    let subscribe = mqtt_ep::packet::v5_0::Subscribe::builder()
+        .packet_id(packet_id)
+        .entries(vec![sub_entry])
+        .build()
+        .expect("Failed to build SUBSCRIBE");
+
+    client
+        .send(subscribe)
+        .await
+        .expect("Failed to send SUBSCRIBE");
+
+    // Should receive DISCONNECT with ProtocolError
+    let packet = client.recv().await.expect("Failed to receive DISCONNECT");
+
+    match packet {
+        mqtt_ep::packet::Packet::V5_0Disconnect(disconnect) => {
+            assert_eq!(
+                disconnect.reason_code(),
+                Some(mqtt_ep::result_code::DisconnectReasonCode::ProtocolError),
+                "Expected ProtocolError for SharedSubscription with NoLocal=true"
+            );
+            println!(
+                "✅ Correctly received DISCONNECT with ProtocolError for SharedSubscription + NoLocal=true"
+            );
+        }
+        _ => panic!("Expected DISCONNECT, got {packet:?}"),
+    }
+
+    // Connection should be closed after DISCONNECT
+    let result = client.recv().await;
+    assert!(
+        result.is_err(),
+        "Connection should be closed after ProtocolError"
+    );
+}

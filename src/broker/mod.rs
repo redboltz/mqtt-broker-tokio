@@ -40,7 +40,7 @@ mod sub_impl;
 pub enum SubscriptionMessage {
     Subscribe {
         session_ref: SessionRef,
-        topics: Vec<(String, mqtt_ep::packet::Qos, bool)>, // (topic_filter, qos, rap)
+        topics: Vec<(String, mqtt_ep::packet::Qos, bool, bool)>, // (topic_filter, qos, rap, nl)
         sub_id: Option<u32>,
         response_tx: oneshot::Sender<Vec<(mqtt_ep::result_code::SubackReturnCode, bool)>>, // (return_code, is_new)
     },
@@ -203,9 +203,9 @@ impl BrokerManager {
                 } => {
                     let mut return_codes = Vec::new();
 
-                    for (topic_filter, qos, rap) in topics {
+                    for (topic_filter, qos, rap, nl) in topics {
                         match subscription_store
-                            .subscribe(session_ref.clone(), &topic_filter, qos, sub_id, rap)
+                            .subscribe(session_ref.clone(), &topic_filter, qos, sub_id, rap, nl)
                             .await
                         {
                             Ok(is_new) => {
@@ -650,6 +650,7 @@ impl BrokerManager {
                     subscription_store,
                     retained_store,
                     session_store,
+                    session_ref,
                 )
                 .await?;
             }
@@ -687,6 +688,7 @@ impl BrokerManager {
                     subscription_store,
                     retained_store,
                     session_store,
+                    session_ref,
                 )
                 .await?;
             }

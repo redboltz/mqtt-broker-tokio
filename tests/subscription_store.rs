@@ -58,6 +58,7 @@ async fn test_same_endpoint_multiple_subscriptions() {
             mqtt_ep::packet::Qos::AtMostOnce,
             Some(1),
             false,
+            false,
         )
         .await
         .unwrap();
@@ -68,6 +69,7 @@ async fn test_same_endpoint_multiple_subscriptions() {
             mqtt_ep::packet::Qos::AtLeastOnce,
             Some(2),
             false,
+            false,
         )
         .await
         .unwrap();
@@ -77,6 +79,7 @@ async fn test_same_endpoint_multiple_subscriptions() {
             "a/#",
             mqtt_ep::packet::Qos::ExactlyOnce,
             Some(3),
+            false,
             false,
         )
         .await
@@ -129,6 +132,7 @@ async fn test_qos_and_sub_id_overwrite() {
             mqtt_ep::packet::Qos::AtMostOnce,
             Some(100),
             false,
+            false,
         )
         .await
         .unwrap();
@@ -145,6 +149,7 @@ async fn test_qos_and_sub_id_overwrite() {
             "test/topic",
             mqtt_ep::packet::Qos::ExactlyOnce,
             Some(200),
+            false,
             false,
         )
         .await
@@ -169,6 +174,7 @@ async fn test_partial_unsubscribe() {
             mqtt_ep::packet::Qos::AtMostOnce,
             Some(1),
             false,
+            false,
         )
         .await
         .unwrap();
@@ -179,6 +185,7 @@ async fn test_partial_unsubscribe() {
             mqtt_ep::packet::Qos::AtLeastOnce,
             Some(2),
             false,
+            false,
         )
         .await
         .unwrap();
@@ -188,6 +195,7 @@ async fn test_partial_unsubscribe() {
             "sensor/room1/temperature",
             mqtt_ep::packet::Qos::ExactlyOnce,
             Some(3),
+            false,
             false,
         )
         .await
@@ -230,6 +238,7 @@ async fn test_complex_wildcard_patterns() {
             mqtt_ep::packet::Qos::AtMostOnce,
             Some(1),
             false,
+            false,
         )
         .await
         .unwrap();
@@ -264,6 +273,7 @@ async fn test_mixed_wildcard_pattern() {
             "a/+/#",
             mqtt_ep::packet::Qos::AtMostOnce,
             Some(1),
+            false,
             false,
         )
         .await
@@ -307,6 +317,7 @@ async fn test_root_multilevel_wildcard() {
             mqtt_ep::packet::Qos::AtMostOnce,
             Some(1),
             false,
+            false,
         )
         .await
         .unwrap();
@@ -335,6 +346,7 @@ async fn test_empty_segment_handling() {
             mqtt_ep::packet::Qos::AtMostOnce,
             Some(1),
             false,
+            false,
         )
         .await
         .unwrap();
@@ -344,6 +356,7 @@ async fn test_empty_segment_handling() {
             "a/+/b",
             mqtt_ep::packet::Qos::AtLeastOnce,
             Some(2),
+            false,
             false,
         )
         .await
@@ -376,6 +389,7 @@ async fn test_multiple_endpoints_same_pattern() {
             mqtt_ep::packet::Qos::AtMostOnce,
             Some(1),
             false,
+            false,
         )
         .await
         .unwrap();
@@ -385,6 +399,7 @@ async fn test_multiple_endpoints_same_pattern() {
             "test/topic",
             mqtt_ep::packet::Qos::AtLeastOnce,
             Some(2),
+            false,
             false,
         )
         .await
@@ -424,6 +439,7 @@ async fn test_subscription_with_none_sub_id() {
             "test/topic",
             mqtt_ep::packet::Qos::AtMostOnce,
             None,
+            false,
             false,
         )
         .await
