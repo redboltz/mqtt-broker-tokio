@@ -80,8 +80,40 @@ impl BrokerManager {
             }
 
             // Check authorization if security is configured
-            let authorized = if let Some(ref sec) = security {
-                // Get username from session_ref
+            // Special case: Response Topics ($response/*) - only allow exact match to own response topic
+            let is_response_topic_filter = topic_filter.starts_with("$response/");
+
+            let authorized = if is_response_topic_filter {
+                // Response Topic: check if it matches this session's response topic
+                if let Some(session) = session_store.get_session(&session_ref.session_id).await {
+                    let session_guard = session.read().await;
+                    if let Some(session_response_topic) = session_guard.response_topic() {
+                        // Only allow exact match (no wildcards)
+                        if topic_filter == session_response_topic {
+                            trace!(
+                                "Authorization: Response Topic '{topic_filter}' - subscribe allowed (matches session's response topic)"
+                            );
+                            true
+                        } else {
+                            error!(
+                                "Authorization: Response Topic '{topic_filter}' - subscribe denied (does not match session's response topic '{session_response_topic}')"
+                            );
+                            false
+                        }
+                    } else {
+                        error!(
+                            "Authorization: Response Topic '{topic_filter}' - subscribe denied (no response topic for this session)"
+                        );
+                        false
+                    }
+                } else {
+                    error!(
+                        "Authorization: Response Topic '{topic_filter}' - subscribe denied (session not found)"
+                    );
+                    false
+                }
+            } else if let Some(ref sec) = security {
+                // Normal topic: use regular authorization
                 if let Some(ref username) = session_ref.session_id.user_name {
                     let auth_result = sec.auth_sub(&topic_filter, username);
                     match auth_result {

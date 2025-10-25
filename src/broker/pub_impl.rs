@@ -269,8 +269,14 @@ impl BrokerManager {
         use tracing::error;
 
         // Check PUBLISH authorization if security is configured
+        // Special case: Response Topics ($response/*) are always allowed for publishing
+        let is_response_topic = topic.starts_with("$response/");
+
         if let Some(ref sec) = security {
-            if let Some(ref username) = publisher_session_ref.session_id.user_name {
+            if is_response_topic {
+                // Response Topics: anyone can publish (for Request/Response pattern)
+                trace!("Authorization: Response Topic '{topic}' - publish allowed for any user");
+            } else if let Some(ref username) = publisher_session_ref.session_id.user_name {
                 match sec.auth_pub(topic, username) {
                     AuthorizationType::Allow => {
                         trace!("Authorization: user '{username}' allowed to publish to '{topic}'");

@@ -315,6 +315,7 @@ impl BrokerManager {
             need_keep,
             clean_start_or_session,
             assigned_client_id,
+            request_response_information,
         ) = match endpoint.recv().await {
             Ok(packet) => {
                 trace!("🔍 Received first packet: {:?}", packet.packet_type());
@@ -362,7 +363,8 @@ impl BrokerManager {
                             session_expiry_interval,
                             need_keep,
                             clean_session,
-                            None,
+                            None, // assigned_client_id
+                            None, // request_response_information (v3.1.1 doesn't support this)
                         )
                     }
                     mqtt_ep::packet::Packet::V5_0Connect(connect) => {
@@ -395,10 +397,23 @@ impl BrokerManager {
                             })
                             .unwrap_or(0);
 
+                        // Extract Request Response Information from properties (default: 0 = not requested)
+                        let request_response_information = connect
+                            .props()
+                            .iter()
+                            .find_map(|prop| {
+                                if let mqtt_ep::packet::Property::RequestResponseInformation(_) = prop {
+                                    prop.as_u8()
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or(0);
+
                         let need_keep = session_expiry_interval > 0;
 
                         trace!(
-                            "MQTT v5.0 client {extracted_id} connected, clean_start={clean_start}, session_expiry_interval={session_expiry_interval}"
+                            "MQTT v5.0 client {extracted_id} connected, clean_start={clean_start}, session_expiry_interval={session_expiry_interval}, request_response_information={request_response_information}"
                         );
 
                         (
@@ -409,6 +424,7 @@ impl BrokerManager {
                             need_keep,
                             clean_start,
                             assigned_client_id,
+                            Some(request_response_information),
                         )
                     }
                     _ => {
@@ -503,6 +519,54 @@ impl BrokerManager {
             "Session takeover complete for {client_id}, session_present={session_present}"
         );
 
+        // Determine Response Topic based on Request Response Information
+        // Only for MQTT v5.0 (request_response_information is Some for v5.0, None for v3.1.1)
+        let response_topic = if let Some(req_resp_info) = request_response_information {
+            if req_resp_info == 1 {
+                // Client requested Response Information
+                if session_present {
+                    // Try to use existing Response Topic from session
+                    if let Some(existing) = &existing_session {
+                        let existing_guard = existing.read().await;
+                        if let Some(existing_topic) = existing_guard.response_topic() {
+                            trace!("Reusing existing Response Topic for {client_id}: {existing_topic}");
+                            Some(existing_topic.to_string())
+                        } else {
+                            // Session exists but no Response Topic, generate new one
+                            let new_topic = format!("$response/{}", uuid::Uuid::new_v4());
+                            trace!("Generated new Response Topic for existing session {client_id}: {new_topic}");
+                            Some(new_topic)
+                        }
+                    } else {
+                        // Should not happen (session_present but no existing_session)
+                        let new_topic = format!("$response/{}", uuid::Uuid::new_v4());
+                        trace!("Generated new Response Topic for {client_id}: {new_topic}");
+                        Some(new_topic)
+                    }
+                } else {
+                    // New session, generate new Response Topic
+                    let new_topic = format!("$response/{}", uuid::Uuid::new_v4());
+                    trace!("Generated new Response Topic for {client_id}: {new_topic}");
+                    Some(new_topic)
+                }
+            } else {
+                // Client did not request Response Information (req_resp_info == 0)
+                // Clear any existing Response Topic
+                if session_present {
+                    if let Some(existing) = &existing_session {
+                        let existing_guard = existing.read().await;
+                        if existing_guard.response_topic().is_some() {
+                            trace!("Clearing Response Topic for {client_id} (not requested)");
+                        }
+                    }
+                }
+                None
+            }
+        } else {
+            // MQTT v3.1.1 - no Response Topic support
+            None
+        };
+
         // Handle session creation or restoration
         let session = if session_present && !clean_start_or_session {
             // Session restoration
@@ -526,9 +590,13 @@ impl BrokerManager {
             };
 
             // Send CONNACK with session_present=true
-            if let Err(e) =
-                Self::send_connack_for_restore(&endpoint_arc, &client_id, session_expiry_interval)
-                    .await
+            if let Err(e) = Self::send_connack_for_restore(
+                &endpoint_arc,
+                &client_id,
+                session_expiry_interval,
+                response_topic.as_deref(),
+            )
+            .await
             {
                 error!("Failed to send CONNACK for {client_id}: {e}");
                 return None;
@@ -537,9 +605,15 @@ impl BrokerManager {
             // Send offline messages
             Self::send_offline_messages(&endpoint_arc, &client_id, offline_messages).await;
 
-            // Get session
+            // Get session and update Response Topic
             match session_store.get_session(&session_id).await {
-                Some(s) => s,
+                Some(s) => {
+                    // Update Response Topic in session
+                    let mut session_guard = s.write().await;
+                    session_guard.set_response_topic(response_topic.clone());
+                    drop(session_guard);
+                    s
+                }
                 None => {
                     error!("Session disappeared after restoration for {client_id}");
                     return None;
@@ -555,6 +629,7 @@ impl BrokerManager {
                 &client_id,
                 session_expiry_interval,
                 assigned_client_id.as_deref(),
+                response_topic.as_deref(),
             )
             .await
             {
@@ -571,6 +646,12 @@ impl BrokerManager {
                     need_keep,
                 )
                 .await;
+
+            // Set Response Topic in new session
+            let mut session_guard = session.write().await;
+            session_guard.set_response_topic(response_topic.clone());
+            drop(session_guard);
+
             session
         };
 
@@ -872,6 +953,7 @@ impl BrokerManager {
         endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
         client_id: &str,
         _session_expiry_interval: u32,
+        response_information: Option<&str>,
     ) -> anyhow::Result<()> {
         let endpoint_version = endpoint
             .get_protocol_version()
@@ -889,11 +971,20 @@ impl BrokerManager {
                 endpoint.send(connack).await?;
             }
             mqtt_ep::Version::V5_0 => {
-                let connack = mqtt_ep::packet::v5_0::Connack::builder()
+                let mut builder = mqtt_ep::packet::v5_0::Connack::builder()
                     .session_present(true)
-                    .reason_code(mqtt_ep::result_code::ConnectReasonCode::Success)
-                    .build()
-                    .unwrap();
+                    .reason_code(mqtt_ep::result_code::ConnectReasonCode::Success);
+
+                // Add Response Information property if provided
+                if let Some(response_info) = response_information {
+                    let prop = mqtt_ep::packet::Property::ResponseInformation(
+                        mqtt_ep::packet::ResponseInformation::new(response_info).unwrap(),
+                    );
+                    builder = builder.props(vec![prop]);
+                    trace!("Adding Response Information to CONNACK: {response_info}");
+                }
+
+                let connack = builder.build().unwrap();
                 trace!("Sending CONNACK (session_present=true) to client {client_id}");
                 endpoint.send(connack).await?;
             }
@@ -912,6 +1003,7 @@ impl BrokerManager {
         client_id: &str,
         _session_expiry_interval: u32,
         assigned_client_id: Option<&str>,
+        response_information: Option<&str>,
     ) -> anyhow::Result<()> {
         let endpoint_version = endpoint
             .get_protocol_version()
@@ -933,20 +1025,31 @@ impl BrokerManager {
                     .session_present(false)
                     .reason_code(mqtt_ep::result_code::ConnectReasonCode::Success);
 
+                // Build properties list
+                let mut props = Vec::new();
+
                 // Add Assigned Client Identifier property if ClientId was auto-assigned
                 if let Some(assigned_id) = assigned_client_id {
-                    builder =
-                        builder.props(vec![mqtt_ep::packet::Property::AssignedClientIdentifier(
-                            mqtt_ep::packet::AssignedClientIdentifier::new(assigned_id)
-                                .expect("Failed to create AssignedClientIdentifier"),
-                        )]);
-                    trace!(
-                        "Sending CONNACK (session_present=false) with assigned ClientId '{assigned_id}' to client {client_id}"
-                    );
-                } else {
-                    trace!("Sending CONNACK (session_present=false) to client {client_id}");
+                    props.push(mqtt_ep::packet::Property::AssignedClientIdentifier(
+                        mqtt_ep::packet::AssignedClientIdentifier::new(assigned_id)
+                            .expect("Failed to create AssignedClientIdentifier"),
+                    ));
+                    trace!("Adding Assigned Client Identifier to CONNACK: {assigned_id}");
                 }
 
+                // Add Response Information property if provided
+                if let Some(response_info) = response_information {
+                    props.push(mqtt_ep::packet::Property::ResponseInformation(
+                        mqtt_ep::packet::ResponseInformation::new(response_info).unwrap(),
+                    ));
+                    trace!("Adding Response Information to CONNACK: {response_info}");
+                }
+
+                if !props.is_empty() {
+                    builder = builder.props(props);
+                }
+
+                trace!("Sending CONNACK (session_present=false) to client {client_id}");
                 let connack = builder.build().unwrap();
                 endpoint.send(connack).await?;
             }

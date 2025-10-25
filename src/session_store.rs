@@ -84,6 +84,10 @@ pub struct Session {
 
     /// Whether to keep session on disconnect (v3.1.1: !clean_session, v5.0: session_expiry_interval > 0)
     need_keep: bool,
+
+    /// Response Topic for Request/Response pattern (MQTT v5.0)
+    /// Generated when Request Response Information is 1 in CONNECT
+    response_topic: Option<String>,
 }
 
 impl Session {
@@ -102,7 +106,18 @@ impl Session {
             session_expiry_interval,
             expiry_timer: None,
             need_keep,
+            response_topic: None,
         }
+    }
+
+    /// Get response topic
+    pub fn response_topic(&self) -> Option<&str> {
+        self.response_topic.as_deref()
+    }
+
+    /// Set response topic
+    pub fn set_response_topic(&mut self, topic: Option<String>) {
+        self.response_topic = topic;
     }
 
     /// Get session expiry interval
