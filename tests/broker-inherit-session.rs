@@ -1031,3 +1031,225 @@ async fn test_message_cleanup_with_clean_session_v3_1_1() {
         }
     }
 }
+/// Test: Response Topic persistence across session inheritance (v5.0)
+/// Tests that Response Topic (from Request Response Information) persists across reconnect
+#[tokio::test]
+async fn test_response_topic_persistence_v5_0() {
+    let broker = BrokerProcess::start();
+    broker.wait_ready().await;
+
+    // === First connection: Request Response Information = 1 ===
+    let stream1 = mqtt_ep::transport::connect_helper::connect_tcp(
+        &format!("127.0.0.1:{}", broker.port()),
+        Some(tokio::time::Duration::from_secs(10)),
+    )
+    .await
+    .expect("Failed to connect");
+
+    let client1 = mqtt_ep::Endpoint::<mqtt_ep::role::Client>::new(mqtt_ep::Version::V5_0);
+    let transport1 = mqtt_ep::transport::TcpTransport::from_stream(stream1);
+
+    let opts1 = mqtt_ep::connection_option::ConnectionOption::builder()
+        .build()
+        .expect("Failed to build connection options");
+    client1
+        .attach_with_options(transport1, mqtt_ep::Mode::Client, opts1)
+        .await
+        .expect("Failed to attach transport");
+
+    // Send CONNECT with Request Response Information = 1
+    let connect1 = mqtt_ep::packet::v5_0::Connect::builder()
+        .client_id("response_test_client")
+        .expect("Failed to set client_id")
+        .clean_start(false) // Session persistence
+        .props(vec![
+            mqtt_ep::packet::Property::SessionExpiryInterval(
+                mqtt_ep::packet::SessionExpiryInterval::new(60).unwrap(),
+            ),
+            mqtt_ep::packet::Property::RequestResponseInformation(
+                mqtt_ep::packet::RequestResponseInformation::new(1).unwrap(),
+            ),
+        ])
+        .build()
+        .expect("Failed to build CONNECT");
+
+    client1
+        .send(connect1)
+        .await
+        .expect("Failed to send CONNECT");
+
+    // Receive CONNACK and extract Response Information
+    let response_topic_1 = match client1.recv().await.expect("Failed to receive CONNACK") {
+        mqtt_ep::packet::Packet::V5_0Connack(connack) => {
+            assert_eq!(
+                connack.reason_code(),
+                mqtt_ep::result_code::ConnectReasonCode::Success
+            );
+            assert_eq!(connack.session_present(), false); // First connection
+
+            // Extract Response Information
+            let response_info = connack
+                .props()
+                .iter()
+                .find_map(|prop| {
+                    if let mqtt_ep::packet::Property::ResponseInformation(ri) = prop {
+                        Some(ri.val().to_string())
+                    } else {
+                        None
+                    }
+                })
+                .expect("Response Information should be present");
+
+            assert!(
+                response_info.starts_with("res_"),
+                "Response Topic should start with res_"
+            );
+            println!("✅ First connection: Response Topic = {response_info}");
+            response_info
+        }
+        _ => panic!("Expected CONNACK"),
+    };
+
+    // Subscribe to the Response Topic
+    let sub_packet_id_1 = client1
+        .acquire_packet_id()
+        .await
+        .expect("Failed to acquire packet_id");
+    let sub_opts = mqtt_ep::packet::SubOpts::new().set_qos(mqtt_ep::packet::Qos::AtMostOnce);
+    let sub_entry = mqtt_ep::packet::SubEntry::new(&response_topic_1, sub_opts)
+        .expect("Failed to create SubEntry");
+    let subscribe1 = mqtt_ep::packet::v5_0::Subscribe::builder()
+        .packet_id(sub_packet_id_1)
+        .entries(vec![sub_entry])
+        .build()
+        .expect("Failed to build SUBSCRIBE");
+
+    client1
+        .send(subscribe1)
+        .await
+        .expect("Failed to send SUBSCRIBE");
+
+    // Receive SUBACK
+    match client1.recv().await.expect("Failed to receive SUBACK") {
+        mqtt_ep::packet::Packet::V5_0Suback(suback) => {
+            assert_eq!(suback.packet_id(), sub_packet_id_1);
+            assert_eq!(suback.reason_codes().len(), 1);
+            assert_eq!(
+                suback.reason_codes()[0],
+                mqtt_ep::result_code::SubackReasonCode::GrantedQos0
+            );
+            println!("✅ Successfully subscribed to Response Topic");
+        }
+        _ => panic!("Expected SUBACK"),
+    }
+
+    // Disconnect (without sending DISCONNECT, simulating connection loss)
+    drop(client1);
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // === Second connection: Reconnect with session inheritance ===
+    let stream2 = mqtt_ep::transport::connect_helper::connect_tcp(
+        &format!("127.0.0.1:{}", broker.port()),
+        Some(tokio::time::Duration::from_secs(10)),
+    )
+    .await
+    .expect("Failed to reconnect");
+
+    let client2 = mqtt_ep::Endpoint::<mqtt_ep::role::Client>::new(mqtt_ep::Version::V5_0);
+    let transport2 = mqtt_ep::transport::TcpTransport::from_stream(stream2);
+
+    let opts2 = mqtt_ep::connection_option::ConnectionOption::builder()
+        .build()
+        .expect("Failed to build connection options");
+    client2
+        .attach_with_options(transport2, mqtt_ep::Mode::Client, opts2)
+        .await
+        .expect("Failed to attach transport");
+
+    // Send CONNECT with Request Response Information = 1 again
+    let connect2 = mqtt_ep::packet::v5_0::Connect::builder()
+        .client_id("response_test_client")
+        .expect("Failed to set client_id")
+        .clean_start(false) // Session persistence
+        .props(vec![
+            mqtt_ep::packet::Property::SessionExpiryInterval(
+                mqtt_ep::packet::SessionExpiryInterval::new(60).unwrap(),
+            ),
+            mqtt_ep::packet::Property::RequestResponseInformation(
+                mqtt_ep::packet::RequestResponseInformation::new(1).unwrap(),
+            ),
+        ])
+        .build()
+        .expect("Failed to build CONNECT");
+
+    client2
+        .send(connect2)
+        .await
+        .expect("Failed to send CONNECT");
+
+    // Receive CONNACK and verify Response Information is the same
+    match client2.recv().await.expect("Failed to receive CONNACK") {
+        mqtt_ep::packet::Packet::V5_0Connack(connack) => {
+            assert_eq!(
+                connack.reason_code(),
+                mqtt_ep::result_code::ConnectReasonCode::Success
+            );
+            assert_eq!(connack.session_present(), true); // Session inherited
+
+            // Extract Response Information
+            let response_info = connack
+                .props()
+                .iter()
+                .find_map(|prop| {
+                    if let mqtt_ep::packet::Property::ResponseInformation(ri) = prop {
+                        Some(ri.val().to_string())
+                    } else {
+                        None
+                    }
+                })
+                .expect("Response Information should be present");
+
+            assert_eq!(
+                response_info, response_topic_1,
+                "Response Topic should be the same after reconnect"
+            );
+            println!("✅ Second connection: Response Topic = {response_info} (SAME as first)");
+        }
+        _ => panic!("Expected CONNACK"),
+    };
+
+    // Verify we can still subscribe to the Response Topic
+    let sub_packet_id_2 = client2
+        .acquire_packet_id()
+        .await
+        .expect("Failed to acquire packet_id");
+    let sub_opts2 = mqtt_ep::packet::SubOpts::new().set_qos(mqtt_ep::packet::Qos::AtMostOnce);
+    let sub_entry2 = mqtt_ep::packet::SubEntry::new(&response_topic_1, sub_opts2)
+        .expect("Failed to create SubEntry");
+    let subscribe2 = mqtt_ep::packet::v5_0::Subscribe::builder()
+        .packet_id(sub_packet_id_2)
+        .entries(vec![sub_entry2])
+        .build()
+        .expect("Failed to build SUBSCRIBE");
+
+    client2
+        .send(subscribe2)
+        .await
+        .expect("Failed to send SUBSCRIBE");
+
+    // Receive SUBACK
+    match client2.recv().await.expect("Failed to receive SUBACK") {
+        mqtt_ep::packet::Packet::V5_0Suback(suback) => {
+            assert_eq!(suback.packet_id(), sub_packet_id_2);
+            assert_eq!(suback.reason_codes().len(), 1);
+            assert_eq!(
+                suback.reason_codes()[0],
+                mqtt_ep::result_code::SubackReasonCode::GrantedQos0
+            );
+            println!("✅ Successfully re-subscribed to the same Response Topic");
+        }
+        _ => panic!("Expected SUBACK"),
+    }
+
+    println!("✅ Response Topic persisted across session inheritance!");
+}

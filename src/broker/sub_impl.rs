@@ -80,15 +80,16 @@ impl BrokerManager {
             }
 
             // Check authorization if security is configured
-            // Special case: Response Topics ($response/*) - only allow exact match to own response topic
-            let is_response_topic_filter = topic_filter.starts_with("$response/");
+            // Special case: Response Topics - only allow exact match to own response topic
+            // Check if topic_filter is a Response Topic (no wildcards allowed)
+            let is_response_topic_filter = session_store.is_response_topic(&topic_filter).await;
 
             let authorized = if is_response_topic_filter {
-                // Response Topic: check if it matches this session's response topic
+                // This is a Response Topic: check if it matches this session's response topic
                 if let Some(session) = session_store.get_session(&session_ref.session_id).await {
                     let session_guard = session.read().await;
                     if let Some(session_response_topic) = session_guard.response_topic() {
-                        // Only allow exact match (no wildcards)
+                        // Only allow exact match (no wildcards, only own Response Topic)
                         if topic_filter == session_response_topic {
                             trace!(
                                 "Authorization: Response Topic '{topic_filter}' - subscribe allowed (matches session's response topic)"

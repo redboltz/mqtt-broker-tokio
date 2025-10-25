@@ -533,20 +533,20 @@ impl BrokerManager {
                             Some(existing_topic.to_string())
                         } else {
                             // Session exists but no Response Topic, generate new one
-                            let new_topic = format!("$response/{}", uuid::Uuid::new_v4());
+                            let new_topic = format!("res_{}", uuid::Uuid::new_v4().simple());
                             trace!("Generated new Response Topic for existing session {client_id}: {new_topic}");
                             Some(new_topic)
                         }
                     } else {
                         // Should not happen (session_present but no existing_session)
-                        let new_topic = format!("$response/{}", uuid::Uuid::new_v4());
+                        let new_topic = format!("res_{}", uuid::Uuid::new_v4().simple());
                         trace!("Generated new Response Topic for {client_id}: {new_topic}");
                         Some(new_topic)
                     }
                 } else {
                     // New session, generate new Response Topic
-                    let new_topic = format!("$response/{}", uuid::Uuid::new_v4());
-                    trace!("Generated new Response Topic for {client_id}: {new_topic}");
+                    let new_topic = format!("res_{}", uuid::Uuid::new_v4().simple());
+                    trace!("Generated new Response Topic for {client_id}: '{new_topic}' (length: {})", new_topic.len());
                     Some(new_topic)
                 }
             } else {
@@ -610,8 +610,24 @@ impl BrokerManager {
                 Some(s) => {
                     // Update Response Topic in session
                     let mut session_guard = s.write().await;
+                    let old_response_topic = session_guard.response_topic().map(|s| s.to_string());
                     session_guard.set_response_topic(response_topic.clone());
                     drop(session_guard);
+
+                    // Unregister old Response Topic if it exists and is different
+                    if let Some(old_topic) = old_response_topic {
+                        if response_topic.as_ref() != Some(&old_topic) {
+                            session_store.unregister_response_topic(&old_topic).await;
+                            trace!("Unregistered old Response Topic: {old_topic}");
+                        }
+                    }
+
+                    // Register new Response Topic
+                    if let Some(ref new_topic) = response_topic {
+                        session_store.register_response_topic(new_topic.clone()).await;
+                        trace!("Registered Response Topic: {new_topic}");
+                    }
+
                     s
                 }
                 None => {
@@ -649,8 +665,23 @@ impl BrokerManager {
 
             // Set Response Topic in new session
             let mut session_guard = session.write().await;
+            let old_response_topic = session_guard.response_topic().map(|s| s.to_string());
             session_guard.set_response_topic(response_topic.clone());
             drop(session_guard);
+
+            // Unregister old Response Topic if it exists and is different
+            if let Some(old_topic) = old_response_topic {
+                if response_topic.as_ref() != Some(&old_topic) {
+                    session_store.unregister_response_topic(&old_topic).await;
+                    trace!("Unregistered old Response Topic: {old_topic}");
+                }
+            }
+
+            // Register new Response Topic
+            if let Some(ref new_topic) = response_topic {
+                session_store.register_response_topic(new_topic.clone()).await;
+                trace!("Registered Response Topic: {new_topic}");
+            }
 
             session
         };
@@ -977,11 +1008,17 @@ impl BrokerManager {
 
                 // Add Response Information property if provided
                 if let Some(response_info) = response_information {
-                    let prop = mqtt_ep::packet::Property::ResponseInformation(
-                        mqtt_ep::packet::ResponseInformation::new(response_info).unwrap(),
-                    );
-                    builder = builder.props(vec![prop]);
-                    trace!("Adding Response Information to CONNACK: {response_info}");
+                    trace!("Attempting to create Response Information with value: '{response_info}'");
+                    match mqtt_ep::packet::ResponseInformation::new(response_info) {
+                        Ok(ri) => {
+                            let prop = mqtt_ep::packet::Property::ResponseInformation(ri);
+                            builder = builder.props(vec![prop]);
+                            trace!("Adding Response Information to CONNACK: {response_info}");
+                        }
+                        Err(e) => {
+                            error!("Failed to create Response Information for '{response_info}': {e}");
+                        }
+                    }
                 }
 
                 let connack = builder.build().unwrap();
@@ -1039,18 +1076,28 @@ impl BrokerManager {
 
                 // Add Response Information property if provided
                 if let Some(response_info) = response_information {
-                    props.push(mqtt_ep::packet::Property::ResponseInformation(
-                        mqtt_ep::packet::ResponseInformation::new(response_info).unwrap(),
-                    ));
-                    trace!("Adding Response Information to CONNACK: {response_info}");
+                    trace!("Attempting to create Response Information with value: '{response_info}'");
+                    match mqtt_ep::packet::ResponseInformation::new(response_info) {
+                        Ok(ri) => {
+                            props.push(mqtt_ep::packet::Property::ResponseInformation(ri));
+                            trace!("Adding Response Information to CONNACK: {response_info}");
+                        }
+                        Err(e) => {
+                            error!("Failed to create Response Information for '{response_info}': {e}");
+                        }
+                    }
                 }
 
                 if !props.is_empty() {
+                    trace!("Setting {} properties on CONNACK builder", props.len());
                     builder = builder.props(props);
                 }
 
                 trace!("Sending CONNACK (session_present=false) to client {client_id}");
-                let connack = builder.build().unwrap();
+                let connack = builder.build().map_err(|e| {
+                    error!("Failed to build CONNACK: {e}");
+                    anyhow::anyhow!("Failed to build CONNACK: {e}")
+                })?;
                 endpoint.send(connack).await?;
             }
             _ => {
