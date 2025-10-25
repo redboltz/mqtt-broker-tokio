@@ -26,6 +26,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info, trace};
 use uuid::Uuid;
 
+use crate::auth_impl::Security;
 use crate::retained_store::RetainedStore;
 use crate::session_store::{SessionId, SessionRef, SessionStore};
 use crate::subscription_store::{EndpointRef, SubscriptionStore};
@@ -40,7 +41,7 @@ mod sub_impl;
 pub enum SubscriptionMessage {
     Subscribe {
         session_ref: SessionRef,
-        topics: Vec<(String, mqtt_ep::packet::Qos, bool)>, // (topic_filter, qos, rap)
+        topics: Vec<(String, mqtt_ep::packet::Qos, bool, bool)>, // (topic_filter, qos, rap, nl)
         sub_id: Option<u32>,
         response_tx: oneshot::Sender<Vec<(mqtt_ep::result_code::SubackReturnCode, bool)>>, // (return_code, is_new)
     },
@@ -65,6 +66,9 @@ pub struct BrokerManager {
 
     /// Global session store
     session_store: Arc<SessionStore>,
+
+    /// Authentication and authorization manager
+    security: Option<Arc<Security>>,
 
     /// Channel to send subscription management messages
     subscription_tx: mpsc::Sender<SubscriptionMessage>,
@@ -91,6 +95,33 @@ impl BrokerManager {
             subscription_store,
             retained_store,
             session_store,
+            security: None,
+            subscription_tx,
+            ep_recv_buf_size,
+        })
+    }
+
+    /// Create a new broker manager with security
+    pub async fn new_with_security(
+        ep_recv_buf_size: Option<usize>,
+        security: Security,
+    ) -> anyhow::Result<Self> {
+        let subscription_store = Arc::new(SubscriptionStore::new());
+        let retained_store = Arc::new(RetainedStore::new());
+        let session_store = Arc::new(SessionStore::new());
+        let (subscription_tx, subscription_rx) = mpsc::channel(1000);
+
+        // Spawn subscription management task
+        let store_for_task = subscription_store.clone();
+        tokio::spawn(async move {
+            Self::subscription_manager_task(store_for_task, subscription_rx).await;
+        });
+
+        Ok(Self {
+            subscription_store,
+            retained_store,
+            session_store,
+            security: Some(Arc::new(security)),
             subscription_tx,
             ep_recv_buf_size,
         })
@@ -138,6 +169,7 @@ impl BrokerManager {
         let subscription_store_for_endpoint = self.subscription_store.clone();
         let retained_store_for_endpoint = self.retained_store.clone();
         let session_store_for_endpoint = self.session_store.clone();
+        let security_for_endpoint = self.security.clone();
         let subscription_tx_for_endpoint = self.subscription_tx.clone();
         let broker_manager_for_cleanup = self.clone();
 
@@ -148,6 +180,7 @@ impl BrokerManager {
                 subscription_store_for_endpoint,
                 retained_store_for_endpoint,
                 session_store_for_endpoint,
+                security_for_endpoint,
                 subscription_tx_for_endpoint,
             )
             .await;
@@ -203,9 +236,9 @@ impl BrokerManager {
                 } => {
                     let mut return_codes = Vec::new();
 
-                    for (topic_filter, qos, rap) in topics {
+                    for (topic_filter, qos, rap, nl) in topics {
                         match subscription_store
-                            .subscribe(session_ref.clone(), &topic_filter, qos, sub_id, rap)
+                            .subscribe(session_ref.clone(), &topic_filter, qos, sub_id, rap, nl)
                             .await
                         {
                             Ok(is_new) => {
@@ -268,23 +301,52 @@ impl BrokerManager {
         subscription_store: Arc<SubscriptionStore>,
         retained_store: Arc<RetainedStore>,
         session_store: Arc<SessionStore>,
+        security: Option<Arc<Security>>,
         subscription_tx: mpsc::Sender<SubscriptionMessage>,
     ) -> Option<(SessionRef, bool)> {
         trace!("Starting endpoint task (waiting for CONNECT)");
 
         // First, wait for CONNECT packet
-        let (client_id, user_name, session_expiry_interval, need_keep, session_present, clean_start_or_session) = match endpoint.recv().await {
+        let (
+            client_id,
+            user_name,
+            password,
+            session_expiry_interval,
+            need_keep,
+            clean_start_or_session,
+            assigned_client_id,
+            request_response_information,
+        ) = match endpoint.recv().await {
             Ok(packet) => {
                 trace!("🔍 Received first packet: {:?}", packet.packet_type());
                 match &packet {
                     mqtt_ep::packet::Packet::V3_1_1Connect(connect) => {
-                        let extracted_id = if connect.client_id().is_empty() {
+                        let clean_session = connect.clean_session();
+                        let client_id_empty = connect.client_id().is_empty();
+
+                        // v3.1.1: If clean_session=false and ClientId is empty, reject with IdentifierRejected
+                        if !clean_session && client_id_empty {
+                            error!(
+                                "MQTT v3.1.1 client with empty ClientId and clean_session=false rejected"
+                            );
+                            let connack = mqtt_ep::packet::v3_1_1::Connack::builder()
+                                .session_present(false)
+                                .return_code(
+                                    mqtt_ep::result_code::ConnectReturnCode::IdentifierRejected,
+                                )
+                                .build()
+                                .unwrap();
+                            let _ = endpoint.send(connack).await;
+                            return None;
+                        }
+
+                        let extracted_id = if client_id_empty {
                             format!("auto-{}", Uuid::new_v4().simple())
                         } else {
                             connect.client_id().to_string()
                         };
                         let user_name = connect.user_name().map(|s| s.to_string());
-                        let clean_session = connect.clean_session();
+                        let password = connect.password().and_then(|p| String::from_utf8(p.to_vec()).ok());
                         trace!(
                             "MQTT v3.1.1 client {extracted_id} connected, clean_session={clean_session}"
                         );
@@ -293,39 +355,33 @@ impl BrokerManager {
                         let session_expiry_interval = if clean_session { 0 } else { u32::MAX };
                         let need_keep = !clean_session;
 
-                        // Create session ID
-                        let session_id = SessionId::new(user_name.clone(), extracted_id.clone());
-
-                        // Step 1: Disconnect existing online session if any (session takeover)
-                        session_store.disconnect_existing_session(&session_id).await;
-
-                        // Step 2: Check if session exists after disconnect
-                        let existing_session = session_store.get_session(&session_id).await;
-
-                        let session_present = if clean_session {
-                            // Clean session: remove existing session if any
-                            if existing_session.is_some() {
-                                session_store.remove_session(&session_id).await;
-                            }
-                            false
-                        } else {
-                            // Check if session exists
-                            existing_session.is_some()
-                        };
-
-                        trace!(
-                            "Session takeover complete for {extracted_id}, session_present={session_present}"
-                        );
-
-                        (extracted_id, user_name, session_expiry_interval, need_keep, session_present, clean_session)
+                        // v3.1.1 doesn't use Assigned Client Identifier property
+                        (
+                            extracted_id,
+                            user_name,
+                            password,
+                            session_expiry_interval,
+                            need_keep,
+                            clean_session,
+                            None, // assigned_client_id
+                            None, // request_response_information (v3.1.1 doesn't support this)
+                        )
                     }
                     mqtt_ep::packet::Packet::V5_0Connect(connect) => {
-                        let extracted_id = if connect.client_id().is_empty() {
+                        let client_id_empty = connect.client_id().is_empty();
+                        let extracted_id = if client_id_empty {
                             format!("auto-{}", Uuid::new_v4().simple())
                         } else {
                             connect.client_id().to_string()
                         };
+                        // v5.0: If ClientId was empty, need to return Assigned Client Identifier
+                        let assigned_client_id = if client_id_empty {
+                            Some(extracted_id.clone())
+                        } else {
+                            None
+                        };
                         let user_name = connect.user_name().map(|s| s.to_string());
+                        let password = connect.password().and_then(|p| String::from_utf8(p.to_vec()).ok());
                         let clean_start = connect.clean_start();
 
                         // Extract SessionExpiryInterval from properties (default: 0)
@@ -341,37 +397,35 @@ impl BrokerManager {
                             })
                             .unwrap_or(0);
 
+                        // Extract Request Response Information from properties (default: 0 = not requested)
+                        let request_response_information = connect
+                            .props()
+                            .iter()
+                            .find_map(|prop| {
+                                if let mqtt_ep::packet::Property::RequestResponseInformation(_) = prop {
+                                    prop.as_u8()
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or(0);
+
                         let need_keep = session_expiry_interval > 0;
 
                         trace!(
-                            "MQTT v5.0 client {extracted_id} connected, clean_start={clean_start}, session_expiry_interval={session_expiry_interval}"
+                            "MQTT v5.0 client {extracted_id} connected, clean_start={clean_start}, session_expiry_interval={session_expiry_interval}, request_response_information={request_response_information}"
                         );
 
-                        // Create session ID
-                        let session_id = SessionId::new(user_name.clone(), extracted_id.clone());
-
-                        // Step 1: Disconnect existing online session if any (session takeover)
-                        session_store.disconnect_existing_session(&session_id).await;
-
-                        // Step 2: Check if session exists after disconnect
-                        let existing_session = session_store.get_session(&session_id).await;
-
-                        let session_present = if clean_start {
-                            // Clean start: remove existing session if any
-                            if existing_session.is_some() {
-                                session_store.remove_session(&session_id).await;
-                            }
-                            false
-                        } else {
-                            // Check if session exists
-                            existing_session.is_some()
-                        };
-
-                        trace!(
-                            "Session takeover complete for {extracted_id}, session_present={session_present}"
-                        );
-
-                        (extracted_id, user_name, session_expiry_interval, need_keep, session_present, clean_start)
+                        (
+                            extracted_id,
+                            user_name,
+                            password,
+                            session_expiry_interval,
+                            need_keep,
+                            clean_start,
+                            assigned_client_id,
+                            Some(request_response_information),
+                        )
                     }
                     _ => {
                         error!("Expected CONNECT packet, received: {packet:?}");
@@ -389,8 +443,129 @@ impl BrokerManager {
         let endpoint_arc = Arc::new(endpoint);
         let _endpoint_ref = EndpointRef::new(endpoint_arc.clone());
 
-        // Create session ID
-        let session_id = SessionId::new(user_name, client_id.clone());
+        // Authenticate user if security is configured
+        let authenticated_username = if let Some(ref sec) = security {
+            match (user_name.as_ref(), password.as_ref()) {
+                (Some(username), Some(pwd)) => {
+                    // Authenticate with username and password
+                    if let Some(auth_user) = sec.login(username, pwd) {
+                        trace!("User {username} authenticated successfully");
+                        Some(auth_user)
+                    } else {
+                        error!("Authentication failed for user {username}");
+                        // Send NotAuthorized CONNACK
+                        Self::send_connack_not_authorized(&endpoint_arc, &client_id).await;
+                        return None;
+                    }
+                }
+                (Some(username), None) => {
+                    // Username provided but no password - try client certificate
+                    if sec.login_cert(username) {
+                        trace!("User {username} authenticated with client certificate");
+                        Some(username.clone())
+                    } else {
+                        error!("Client certificate authentication failed for user {username}");
+                        // Send NotAuthorized CONNACK
+                        Self::send_connack_not_authorized(&endpoint_arc, &client_id).await;
+                        return None;
+                    }
+                }
+                (None, None) => {
+                    // No username/password - try anonymous
+                    if let Some(anon_user) = sec.login_anonymous() {
+                        trace!("Anonymous user {anon_user} authenticated");
+                        Some(anon_user.to_string())
+                    } else {
+                        error!("Anonymous authentication not configured");
+                        // Send NotAuthorized CONNACK
+                        Self::send_connack_not_authorized(&endpoint_arc, &client_id).await;
+                        return None;
+                    }
+                }
+                (None, Some(_)) => {
+                    // Password without username - not allowed
+                    error!("Password provided without username");
+                    // Send NotAuthorized CONNACK
+                    Self::send_connack_not_authorized(&endpoint_arc, &client_id).await;
+                    return None;
+                }
+            }
+        } else {
+            // No security configured - allow all connections
+            user_name.clone()
+        };
+
+        // Create session ID with authenticated username
+        let session_id = SessionId::new(authenticated_username, client_id.clone());
+
+        // Step 1: Disconnect existing online session if any (session takeover)
+        session_store.disconnect_existing_session(&session_id).await;
+
+        // Step 2: Check if session exists after disconnect
+        let existing_session = session_store.get_session(&session_id).await;
+
+        let session_present = if clean_start_or_session {
+            // Clean session/start: remove existing session if any
+            if existing_session.is_some() {
+                session_store.remove_session(&session_id).await;
+            }
+            false
+        } else {
+            // Check if session exists
+            existing_session.is_some()
+        };
+
+        trace!(
+            "Session takeover complete for {client_id}, session_present={session_present}"
+        );
+
+        // Determine Response Topic based on Request Response Information
+        // Only for MQTT v5.0 (request_response_information is Some for v5.0, None for v3.1.1)
+        let response_topic = if let Some(req_resp_info) = request_response_information {
+            if req_resp_info == 1 {
+                // Client requested Response Information
+                if session_present {
+                    // Try to use existing Response Topic from session
+                    if let Some(existing) = &existing_session {
+                        let existing_guard = existing.read().await;
+                        if let Some(existing_topic) = existing_guard.response_topic() {
+                            trace!("Reusing existing Response Topic for {client_id}: {existing_topic}");
+                            Some(existing_topic.to_string())
+                        } else {
+                            // Session exists but no Response Topic, generate new one
+                            let new_topic = format!("$response/{}", uuid::Uuid::new_v4());
+                            trace!("Generated new Response Topic for existing session {client_id}: {new_topic}");
+                            Some(new_topic)
+                        }
+                    } else {
+                        // Should not happen (session_present but no existing_session)
+                        let new_topic = format!("$response/{}", uuid::Uuid::new_v4());
+                        trace!("Generated new Response Topic for {client_id}: {new_topic}");
+                        Some(new_topic)
+                    }
+                } else {
+                    // New session, generate new Response Topic
+                    let new_topic = format!("$response/{}", uuid::Uuid::new_v4());
+                    trace!("Generated new Response Topic for {client_id}: {new_topic}");
+                    Some(new_topic)
+                }
+            } else {
+                // Client did not request Response Information (req_resp_info == 0)
+                // Clear any existing Response Topic
+                if session_present {
+                    if let Some(existing) = &existing_session {
+                        let existing_guard = existing.read().await;
+                        if existing_guard.response_topic().is_some() {
+                            trace!("Clearing Response Topic for {client_id} (not requested)");
+                        }
+                    }
+                }
+                None
+            }
+        } else {
+            // MQTT v3.1.1 - no Response Topic support
+            None
+        };
 
         // Handle session creation or restoration
         let session = if session_present && !clean_start_or_session {
@@ -419,6 +594,7 @@ impl BrokerManager {
                 &endpoint_arc,
                 &client_id,
                 session_expiry_interval,
+                response_topic.as_deref(),
             )
             .await
             {
@@ -429,9 +605,15 @@ impl BrokerManager {
             // Send offline messages
             Self::send_offline_messages(&endpoint_arc, &client_id, offline_messages).await;
 
-            // Get session
+            // Get session and update Response Topic
             match session_store.get_session(&session_id).await {
-                Some(s) => s,
+                Some(s) => {
+                    // Update Response Topic in session
+                    let mut session_guard = s.write().await;
+                    session_guard.set_response_topic(response_topic.clone());
+                    drop(session_guard);
+                    s
+                }
                 None => {
                     error!("Session disappeared after restoration for {client_id}");
                     return None;
@@ -442,9 +624,14 @@ impl BrokerManager {
             trace!("Creating new session for client {client_id}");
 
             // Send CONNACK with session_present=false
-            if let Err(e) =
-                Self::send_connack_for_new(&endpoint_arc, &client_id, session_expiry_interval)
-                    .await
+            if let Err(e) = Self::send_connack_for_new(
+                &endpoint_arc,
+                &client_id,
+                session_expiry_interval,
+                assigned_client_id.as_deref(),
+                response_topic.as_deref(),
+            )
+            .await
             {
                 error!("Failed to send CONNACK for {client_id}: {e}");
                 return None;
@@ -459,6 +646,12 @@ impl BrokerManager {
                     need_keep,
                 )
                 .await;
+
+            // Set Response Topic in new session
+            let mut session_guard = session.write().await;
+            session_guard.set_response_topic(response_topic.clone());
+            drop(session_guard);
+
             session
         };
 
@@ -485,6 +678,7 @@ impl BrokerManager {
                         &subscription_store,
                         &retained_store,
                         &session_store,
+                        &security,
                         &subscription_tx,
                         &endpoint_arc,
                         &session_ref,
@@ -533,6 +727,7 @@ impl BrokerManager {
         subscription_store: &Arc<SubscriptionStore>,
         retained_store: &Arc<RetainedStore>,
         session_store: &Arc<SessionStore>,
+        security: &Option<Arc<Security>>,
         subscription_tx: &mpsc::Sender<SubscriptionMessage>,
         endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
         session_ref: &SessionRef,
@@ -543,6 +738,7 @@ impl BrokerManager {
                     sub.packet_id(),
                     sub.entries(),
                     Vec::new(),
+                    security,
                     subscription_tx,
                     endpoint,
                     session_ref,
@@ -557,6 +753,7 @@ impl BrokerManager {
                     sub.packet_id(),
                     sub.entries(),
                     sub.props().to_vec(),
+                    security,
                     subscription_tx,
                     endpoint,
                     session_ref,
@@ -599,10 +796,33 @@ impl BrokerManager {
                     subscription_store,
                     retained_store,
                     session_store,
+                    session_ref,
+                    security,
                 )
                 .await?;
             }
             mqtt_ep::packet::Packet::V5_0Publish(pub_packet) => {
+                // v5.0: Check for SubscriptionIdentifier in PUBLISH from client (Protocol Error)
+                // MQTT spec: SubscriptionIdentifier is only sent from Server to Client, never from Client to Server
+                let has_sub_id = pub_packet.props().iter().any(|prop| {
+                    matches!(prop, mqtt_ep::packet::Property::SubscriptionIdentifier(_))
+                });
+
+                if has_sub_id {
+                    error!(
+                        "Protocol Error: Client {client_id} sent PUBLISH with SubscriptionIdentifier property"
+                    );
+                    // Send DISCONNECT with ProtocolError reason code
+                    let disconnect = mqtt_ep::packet::v5_0::Disconnect::builder()
+                        .reason_code(mqtt_ep::result_code::DisconnectReasonCode::ProtocolError)
+                        .build()
+                        .unwrap();
+                    let _ = endpoint.send(disconnect).await;
+                    return Err(anyhow::anyhow!(
+                        "Protocol Error: PUBLISH contains SubscriptionIdentifier"
+                    ));
+                }
+
                 Self::handle_publish(
                     endpoint,
                     pub_packet.packet_id().unwrap_or(0),
@@ -615,6 +835,8 @@ impl BrokerManager {
                     subscription_store,
                     retained_store,
                     session_store,
+                    session_ref,
+                    security,
                 )
                 .await?;
             }
@@ -731,6 +953,7 @@ impl BrokerManager {
         endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
         client_id: &str,
         _session_expiry_interval: u32,
+        response_information: Option<&str>,
     ) -> anyhow::Result<()> {
         let endpoint_version = endpoint
             .get_protocol_version()
@@ -748,11 +971,20 @@ impl BrokerManager {
                 endpoint.send(connack).await?;
             }
             mqtt_ep::Version::V5_0 => {
-                let connack = mqtt_ep::packet::v5_0::Connack::builder()
+                let mut builder = mqtt_ep::packet::v5_0::Connack::builder()
                     .session_present(true)
-                    .reason_code(mqtt_ep::result_code::ConnectReasonCode::Success)
-                    .build()
-                    .unwrap();
+                    .reason_code(mqtt_ep::result_code::ConnectReasonCode::Success);
+
+                // Add Response Information property if provided
+                if let Some(response_info) = response_information {
+                    let prop = mqtt_ep::packet::Property::ResponseInformation(
+                        mqtt_ep::packet::ResponseInformation::new(response_info).unwrap(),
+                    );
+                    builder = builder.props(vec![prop]);
+                    trace!("Adding Response Information to CONNACK: {response_info}");
+                }
+
+                let connack = builder.build().unwrap();
                 trace!("Sending CONNACK (session_present=true) to client {client_id}");
                 endpoint.send(connack).await?;
             }
@@ -770,6 +1002,8 @@ impl BrokerManager {
         endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
         client_id: &str,
         _session_expiry_interval: u32,
+        assigned_client_id: Option<&str>,
+        response_information: Option<&str>,
     ) -> anyhow::Result<()> {
         let endpoint_version = endpoint
             .get_protocol_version()
@@ -787,12 +1021,36 @@ impl BrokerManager {
                 endpoint.send(connack).await?;
             }
             mqtt_ep::Version::V5_0 => {
-                let connack = mqtt_ep::packet::v5_0::Connack::builder()
+                let mut builder = mqtt_ep::packet::v5_0::Connack::builder()
                     .session_present(false)
-                    .reason_code(mqtt_ep::result_code::ConnectReasonCode::Success)
-                    .build()
-                    .unwrap();
+                    .reason_code(mqtt_ep::result_code::ConnectReasonCode::Success);
+
+                // Build properties list
+                let mut props = Vec::new();
+
+                // Add Assigned Client Identifier property if ClientId was auto-assigned
+                if let Some(assigned_id) = assigned_client_id {
+                    props.push(mqtt_ep::packet::Property::AssignedClientIdentifier(
+                        mqtt_ep::packet::AssignedClientIdentifier::new(assigned_id)
+                            .expect("Failed to create AssignedClientIdentifier"),
+                    ));
+                    trace!("Adding Assigned Client Identifier to CONNACK: {assigned_id}");
+                }
+
+                // Add Response Information property if provided
+                if let Some(response_info) = response_information {
+                    props.push(mqtt_ep::packet::Property::ResponseInformation(
+                        mqtt_ep::packet::ResponseInformation::new(response_info).unwrap(),
+                    ));
+                    trace!("Adding Response Information to CONNACK: {response_info}");
+                }
+
+                if !props.is_empty() {
+                    builder = builder.props(props);
+                }
+
                 trace!("Sending CONNACK (session_present=false) to client {client_id}");
+                let connack = builder.build().unwrap();
                 endpoint.send(connack).await?;
             }
             _ => {
@@ -802,6 +1060,43 @@ impl BrokerManager {
 
         trace!("CONNACK (session_present=false) sent to client {client_id}");
         Ok(())
+    }
+
+    /// Send CONNACK with NotAuthorized reason code (authentication failed)
+    async fn send_connack_not_authorized(
+        endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
+        client_id: &str,
+    ) {
+        let endpoint_version = endpoint
+            .get_protocol_version()
+            .await
+            .unwrap_or(mqtt_ep::Version::V5_0);
+
+        match endpoint_version {
+            mqtt_ep::Version::V3_1_1 => {
+                let connack = mqtt_ep::packet::v3_1_1::Connack::builder()
+                    .session_present(false)
+                    .return_code(mqtt_ep::result_code::ConnectReturnCode::NotAuthorized)
+                    .build()
+                    .unwrap();
+                trace!("Sending CONNACK (NotAuthorized) to client {client_id}");
+                let _ = endpoint.send(connack).await;
+            }
+            mqtt_ep::Version::V5_0 => {
+                let connack = mqtt_ep::packet::v5_0::Connack::builder()
+                    .session_present(false)
+                    .reason_code(mqtt_ep::result_code::ConnectReasonCode::NotAuthorized)
+                    .build()
+                    .unwrap();
+                trace!("Sending CONNACK (NotAuthorized) to client {client_id}");
+                let _ = endpoint.send(connack).await;
+            }
+            _ => {
+                error!("Unsupported MQTT version for NotAuthorized CONNACK");
+            }
+        }
+
+        trace!("CONNACK (NotAuthorized) sent to client {client_id}");
     }
 
     /// Send offline messages to endpoint

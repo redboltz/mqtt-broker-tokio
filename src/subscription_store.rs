@@ -47,7 +47,7 @@ impl std::error::Error for SubscriptionError {}
 
 pub type ClientId = String;
 
-/// Subscription information containing session reference, QoS, topic filter, subscription ID, and RAP flag
+/// Subscription information containing session reference, QoS, topic filter, subscription ID, RAP flag, and NL flag
 #[derive(Debug, Clone)]
 pub struct Subscription {
     pub session_ref: SessionRef,
@@ -55,6 +55,7 @@ pub struct Subscription {
     pub topic_filter: String,
     pub sub_id: Option<u32>,
     pub rap: bool, // Retain As Published flag
+    pub nl: bool,  // No Local flag (v5.0 only, false for v3.1.1)
 }
 
 /// Wrapper for Arc<Endpoint> that uses pointer-based comparison and hashing
@@ -107,7 +108,6 @@ impl std::fmt::Debug for EndpointRef {
         write!(f, "EndpointRef({:p})", Arc::as_ptr(&self.0))
     }
 }
-
 
 /// Trie node containing subscription information
 #[derive(Debug, Clone, Default)]
@@ -170,6 +170,7 @@ impl SubscriptionStore {
         qos: mqtt_ep::packet::Qos,
         sub_id: Option<u32>,
         rap: bool,
+        nl: bool,
     ) -> Result<bool, SubscriptionError> {
         // Check if this is a shared subscription
         if let Some((share_name, actual_filter)) = Self::parse_shared_subscription(topic_filter) {
@@ -188,6 +189,7 @@ impl SubscriptionStore {
                     topic_filter: actual_filter.clone(),
                     sub_id,
                     rap,
+                    nl,
                 },
             );
 
@@ -211,6 +213,7 @@ impl SubscriptionStore {
                 qos,
                 sub_id,
                 rap,
+                nl,
                 0,
             );
 
@@ -232,6 +235,7 @@ impl SubscriptionStore {
         qos: mqtt_ep::packet::Qos,
         sub_id: Option<u32>,
         rap: bool,
+        nl: bool,
         depth: usize,
     ) -> bool {
         if depth >= segments.len() {
@@ -243,6 +247,7 @@ impl SubscriptionStore {
                 qos,
                 sub_id,
                 rap,
+                nl,
             );
         }
 
@@ -258,6 +263,7 @@ impl SubscriptionStore {
                     qos,
                     sub_id,
                     rap,
+                    nl,
                 )
             }
             "+" => {
@@ -275,6 +281,7 @@ impl SubscriptionStore {
                             qos,
                             sub_id,
                             rap,
+                            nl,
                         )
                     } else {
                         Self::insert_subscription(
@@ -285,6 +292,7 @@ impl SubscriptionStore {
                             qos,
                             sub_id,
                             rap,
+                            nl,
                             depth + 1,
                         )
                     }
@@ -306,6 +314,7 @@ impl SubscriptionStore {
                     qos,
                     sub_id,
                     rap,
+                    nl,
                     depth + 1,
                 )
             }
@@ -321,16 +330,18 @@ impl SubscriptionStore {
         qos: mqtt_ep::packet::Qos,
         sub_id: Option<u32>,
         rap: bool,
+        nl: bool,
     ) -> bool {
         // Find existing subscription with same session_ref and topic_filter
         if let Some(existing) = subscribers
             .iter_mut()
             .find(|s| s.session_ref == session_ref && s.topic_filter == topic_filter)
         {
-            // Update existing subscription (QoS, sub_id, and rap overwrite)
+            // Update existing subscription (QoS, sub_id, rap, and nl overwrite)
             existing.qos = qos;
             existing.sub_id = sub_id;
             existing.rap = rap;
+            existing.nl = nl;
             false // Not a new subscription
         } else {
             // Add new subscription
@@ -340,6 +351,7 @@ impl SubscriptionStore {
                 topic_filter: topic_filter.to_string(),
                 sub_id,
                 rap,
+                nl,
             });
             true // New subscription
         }
@@ -455,7 +467,21 @@ impl SubscriptionStore {
     }
 
     /// Find all subscriber endpoints for a given published topic
-    pub async fn find_subscribers(&self, topic: &str) -> Vec<Subscription> {
+    ///
+    /// # Arguments
+    /// * `topic` - The topic to match subscribers against
+    /// * `auth_checker` - Optional authorization checker function that returns true if a subscriber is authorized
+    ///
+    /// # Returns
+    /// Vector of subscriptions for subscribers that match and are authorized (if checker provided)
+    pub async fn find_subscribers<F>(
+        &self,
+        topic: &str,
+        auth_checker: Option<F>,
+    ) -> Vec<Subscription>
+    where
+        F: Fn(&SessionRef, &str) -> bool + Clone,
+    {
         // Get regular subscribers
         let root = self.root.read().await;
         let mut all_subscribers = Vec::new();
@@ -470,7 +496,34 @@ impl SubscriptionStore {
         let mut shared_subs = self.shared_subscriptions.write().await;
 
         // Find all matching shared subscriptions using the SharedSubscriptionManager
-        let shared_matches = shared_subs.find_all_targets(&segments, Self::topic_matches_filter);
+        // For performance optimization: only apply client filter for wildcard + auth_checker
+        // We need to check if any subscription might have wildcard BEFORE calling find_all_targets
+        // to avoid consuming turn counter twice
+        let shared_matches = if let Some(ref checker) = auth_checker {
+            // Check if any subscription group has a wildcard filter that could match this topic
+            // This is a heuristic: we check if the topic has multiple segments which might match wildcards
+            let might_match_wildcard = segments.len() > 1;
+
+            if might_match_wildcard {
+                // Use authorization filter to be safe
+                let checker_clone = checker.clone();
+                let topic_owned = topic.to_string();
+                shared_subs.find_all_targets_with_filter(
+                    &segments,
+                    Self::topic_matches_filter,
+                    move |session_ref| {
+                        // Check if this client has authorization to receive this topic
+                        checker_clone(session_ref, &topic_owned)
+                    },
+                )
+            } else {
+                // Single segment topic unlikely to match wildcards with different permissions
+                shared_subs.find_all_targets(&segments, Self::topic_matches_filter)
+            }
+        } else {
+            // No auth_checker, use normal find
+            shared_subs.find_all_targets(&segments, Self::topic_matches_filter)
+        };
 
         for (_share_name, session_ref, details) in shared_matches {
             result.push(Subscription {
@@ -479,6 +532,7 @@ impl SubscriptionStore {
                 topic_filter: details.topic_filter,
                 sub_id: details.sub_id,
                 rap: details.rap,
+                nl: details.nl,
             });
 
             trace!("Shared subscription match: topic '{topic}' matched with LRU selection");

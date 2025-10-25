@@ -84,6 +84,10 @@ pub struct Session {
 
     /// Whether to keep session on disconnect (v3.1.1: !clean_session, v5.0: session_expiry_interval > 0)
     need_keep: bool,
+
+    /// Response Topic for Request/Response pattern (MQTT v5.0)
+    /// Generated when Request Response Information is 1 in CONNECT
+    response_topic: Option<String>,
 }
 
 impl Session {
@@ -102,7 +106,18 @@ impl Session {
             session_expiry_interval,
             expiry_timer: None,
             need_keep,
+            response_topic: None,
         }
+    }
+
+    /// Get response topic
+    pub fn response_topic(&self) -> Option<&str> {
+        self.response_topic.as_deref()
+    }
+
+    /// Set response topic
+    pub fn set_response_topic(&mut self, topic: Option<String>) {
+        self.response_topic = topic;
     }
 
     /// Get session expiry interval
@@ -208,71 +223,74 @@ impl Session {
         if self.online {
             // Online: send message directly
             if let Some(endpoint) = &self.endpoint {
-            // Get endpoint version to build appropriate PUBLISH packet
-            let endpoint_version = endpoint
-                .get_protocol_version()
-                .await
-                .unwrap_or(mqtt_ep::Version::V5_0);
+                // Get endpoint version to build appropriate PUBLISH packet
+                let endpoint_version = endpoint
+                    .get_protocol_version()
+                    .await
+                    .unwrap_or(mqtt_ep::Version::V5_0);
 
-            match endpoint_version {
-                mqtt_ep::Version::V3_1_1 => {
-                    let mut builder = mqtt_ep::packet::v3_1_1::Publish::builder()
-                        .topic_name(&topic_name)
-                        .expect("Failed to set topic_name")
-                        .qos(qos)
-                        .retain(retain)
-                        .payload(payload.clone());
+                match endpoint_version {
+                    mqtt_ep::Version::V3_1_1 => {
+                        let mut builder = mqtt_ep::packet::v3_1_1::Publish::builder()
+                            .topic_name(&topic_name)
+                            .expect("Failed to set topic_name")
+                            .qos(qos)
+                            .retain(retain)
+                            .payload(payload.clone());
 
-                    let publish = if qos != mqtt_ep::packet::Qos::AtMostOnce {
-                        // Acquire packet ID for QoS > 0
-                        let packet_id = endpoint.acquire_packet_id().await.unwrap_or(1);
-                        builder = builder.packet_id(packet_id);
-                        builder.build().expect("Failed to build PUBLISH")
-                    } else {
-                        builder.build().expect("Failed to build PUBLISH")
-                    };
+                        let publish = if qos != mqtt_ep::packet::Qos::AtMostOnce {
+                            // Acquire packet ID for QoS > 0
+                            let packet_id = endpoint.acquire_packet_id().await.unwrap_or(1);
+                            builder = builder.packet_id(packet_id);
+                            builder.build().expect("Failed to build PUBLISH")
+                        } else {
+                            builder.build().expect("Failed to build PUBLISH")
+                        };
 
-                    if let Err(e) = endpoint.send(publish).await {
-                        debug!(
-                            "Failed to send PUBLISH to session {:?}: {e}",
-                            self.session_id
-                        );
+                        if let Err(e) = endpoint.send(publish).await {
+                            debug!(
+                                "Failed to send PUBLISH to session {:?}: {e}",
+                                self.session_id
+                            );
+                        }
+                    }
+                    mqtt_ep::Version::V5_0 => {
+                        let mut builder = mqtt_ep::packet::v5_0::Publish::builder()
+                            .topic_name(&topic_name)
+                            .expect("Failed to set topic_name")
+                            .qos(qos)
+                            .retain(retain)
+                            .payload(payload.clone());
+
+                        if !props.is_empty() {
+                            builder = builder.props(props.clone());
+                        }
+
+                        let publish = if qos != mqtt_ep::packet::Qos::AtMostOnce {
+                            // Acquire packet ID for QoS > 0
+                            let packet_id = endpoint.acquire_packet_id().await.unwrap_or(1);
+                            builder = builder.packet_id(packet_id);
+                            builder.build().expect("Failed to build PUBLISH")
+                        } else {
+                            builder.build().expect("Failed to build PUBLISH")
+                        };
+
+                        if let Err(e) = endpoint.send(publish).await {
+                            debug!(
+                                "Failed to send PUBLISH to session {:?}: {e}",
+                                self.session_id
+                            );
+                        }
+                    }
+                    _ => {
+                        debug!("Unsupported MQTT version for session {:?}", self.session_id);
                     }
                 }
-                mqtt_ep::Version::V5_0 => {
-                    let mut builder = mqtt_ep::packet::v5_0::Publish::builder()
-                        .topic_name(&topic_name)
-                        .expect("Failed to set topic_name")
-                        .qos(qos)
-                        .retain(retain)
-                        .payload(payload.clone());
-
-                    if !props.is_empty() {
-                        builder = builder.props(props.clone());
-                    }
-
-                    let publish = if qos != mqtt_ep::packet::Qos::AtMostOnce {
-                        // Acquire packet ID for QoS > 0
-                        let packet_id = endpoint.acquire_packet_id().await.unwrap_or(1);
-                        builder = builder.packet_id(packet_id);
-                        builder.build().expect("Failed to build PUBLISH")
-                    } else {
-                        builder.build().expect("Failed to build PUBLISH")
-                    };
-
-                    if let Err(e) = endpoint.send(publish).await {
-                        debug!(
-                            "Failed to send PUBLISH to session {:?}: {e}",
-                            self.session_id
-                        );
-                    }
-                }
-                _ => {
-                    debug!("Unsupported MQTT version for session {:?}", self.session_id);
-                }
-            }
             } else {
-                debug!("Session is online but endpoint is None for {:?}", self.session_id);
+                debug!(
+                    "Session is online but endpoint is None for {:?}",
+                    self.session_id
+                );
             }
         } else {
             // Offline: store message for QoS1/QoS2
@@ -423,7 +441,10 @@ impl SessionStore {
 
             // Get stored packets and QoS2 PIDs from old endpoint (if it exists)
             if let Some(old_endpoint) = session_guard.endpoint() {
-                trace!("Restoring session state from old endpoint for {:?}", session_id);
+                trace!(
+                    "Restoring session state from old endpoint for {:?}",
+                    session_id
+                );
 
                 // Get stored packets and QoS2 PIDs from old endpoint
                 let stored_packets = old_endpoint

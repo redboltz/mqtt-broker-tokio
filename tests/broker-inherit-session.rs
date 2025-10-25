@@ -108,8 +108,8 @@ async fn test_subscription_persistence_v5_0() {
         .await
         .expect("Failed to acquire packet_id");
     let sub_opts = mqtt_ep::packet::SubOpts::new().set_qos(mqtt_ep::packet::Qos::AtLeastOnce);
-    let sub_entry = mqtt_ep::packet::SubEntry::new("test/topic", sub_opts)
-        .expect("Failed to create SubEntry");
+    let sub_entry =
+        mqtt_ep::packet::SubEntry::new("test/topic", sub_opts).expect("Failed to create SubEntry");
     let subscribe = mqtt_ep::packet::v5_0::Subscribe::builder()
         .packet_id(sub_packet_id)
         .entries(vec![sub_entry])
@@ -188,10 +188,7 @@ async fn test_subscription_persistence_v5_0() {
         .expect("Failed to send CONNECT");
 
     // Receive CONNACK
-    let packet = subscriber2
-        .recv()
-        .await
-        .expect("Failed to receive CONNACK");
+    let packet = subscriber2.recv().await.expect("Failed to receive CONNACK");
     match packet {
         mqtt_ep::packet::Packet::V5_0Connack(connack) => {
             assert_eq!(connack.session_present(), true);
@@ -305,10 +302,7 @@ async fn test_session_inherit_with_messages_v5_0() {
         .expect("Failed to send CONNECT");
 
     // Receive CONNACK
-    let packet = subscriber1
-        .recv()
-        .await
-        .expect("Failed to receive CONNACK");
+    let packet = subscriber1.recv().await.expect("Failed to receive CONNACK");
     match packet {
         mqtt_ep::packet::Packet::V5_0Connack(connack) => {
             assert_eq!(connack.session_present(), false);
@@ -322,8 +316,8 @@ async fn test_session_inherit_with_messages_v5_0() {
         .await
         .expect("Failed to acquire packet_id");
     let sub_opts = mqtt_ep::packet::SubOpts::new().set_qos(mqtt_ep::packet::Qos::AtLeastOnce);
-    let sub_entry = mqtt_ep::packet::SubEntry::new("test/topic", sub_opts)
-        .expect("Failed to create SubEntry");
+    let sub_entry =
+        mqtt_ep::packet::SubEntry::new("test/topic", sub_opts).expect("Failed to create SubEntry");
     let subscribe = mqtt_ep::packet::v5_0::Subscribe::builder()
         .packet_id(sub_packet_id)
         .entries(vec![sub_entry])
@@ -445,10 +439,7 @@ async fn test_session_inherit_with_messages_v5_0() {
         .expect("Failed to send CONNECT");
 
     // Receive CONNACK
-    let packet = subscriber2
-        .recv()
-        .await
-        .expect("Failed to receive CONNACK");
+    let packet = subscriber2.recv().await.expect("Failed to receive CONNACK");
     match packet {
         mqtt_ep::packet::Packet::V5_0Connack(connack) => {
             assert_eq!(connack.session_present(), true);
@@ -467,7 +458,10 @@ async fn test_session_inherit_with_messages_v5_0() {
     match packet {
         mqtt_ep::packet::Packet::V5_0Publish(pub_pkt) => {
             assert_eq!(pub_pkt.payload().as_slice(), b"message1");
-            assert_eq!(pub_pkt.packet_id().expect("Expected packet_id"), msg1_packet_id);
+            assert_eq!(
+                pub_pkt.packet_id().expect("Expected packet_id"),
+                msg1_packet_id
+            );
 
             // Send PUBACK
             let puback = mqtt_ep::packet::v5_0::Puback::builder()
@@ -581,10 +575,7 @@ async fn test_no_message_delivery_with_need_keep_false_v5_0() {
         .send(sub_connect1)
         .await
         .expect("Failed to send CONNECT");
-    let _ = subscriber1
-        .recv()
-        .await
-        .expect("Failed to receive CONNACK");
+    let _ = subscriber1.recv().await.expect("Failed to receive CONNACK");
 
     // Subscribe to topic
     let sub_packet_id = subscriber1
@@ -592,8 +583,8 @@ async fn test_no_message_delivery_with_need_keep_false_v5_0() {
         .await
         .expect("Failed to acquire packet_id");
     let sub_opts = mqtt_ep::packet::SubOpts::new().set_qos(mqtt_ep::packet::Qos::AtLeastOnce);
-    let sub_entry = mqtt_ep::packet::SubEntry::new("test/topic", sub_opts)
-        .expect("Failed to create SubEntry");
+    let sub_entry =
+        mqtt_ep::packet::SubEntry::new("test/topic", sub_opts).expect("Failed to create SubEntry");
     let subscribe = mqtt_ep::packet::v5_0::Subscribe::builder()
         .packet_id(sub_packet_id)
         .entries(vec![sub_entry])
@@ -669,10 +660,7 @@ async fn test_no_message_delivery_with_need_keep_false_v5_0() {
         .expect("Failed to send CONNECT");
 
     // Receive CONNACK - session should NOT be present
-    let packet = subscriber2
-        .recv()
-        .await
-        .expect("Failed to receive CONNACK");
+    let packet = subscriber2.recv().await.expect("Failed to receive CONNACK");
     match packet {
         mqtt_ep::packet::Packet::V5_0Connack(connack) => {
             assert_eq!(connack.session_present(), false);
@@ -682,12 +670,7 @@ async fn test_no_message_delivery_with_need_keep_false_v5_0() {
 
     // Should NOT receive any messages (session was deleted)
     // Try to receive with timeout
-    match tokio::time::timeout(
-        tokio::time::Duration::from_millis(500),
-        subscriber2.recv(),
-    )
-    .await
-    {
+    match tokio::time::timeout(tokio::time::Duration::from_millis(500), subscriber2.recv()).await {
         Ok(_) => panic!("Should not receive any message"),
         Err(_) => {
             println!("✅ No messages received as expected (session was deleted)");
@@ -768,10 +751,7 @@ async fn test_message_cleanup_with_clean_start_v5_0() {
         .send(sub_connect1)
         .await
         .expect("Failed to send CONNECT");
-    let _ = subscriber1
-        .recv()
-        .await
-        .expect("Failed to receive CONNACK");
+    let _ = subscriber1.recv().await.expect("Failed to receive CONNACK");
 
     // Subscribe to topic
     let sub_packet_id = subscriber1
@@ -779,8 +759,8 @@ async fn test_message_cleanup_with_clean_start_v5_0() {
         .await
         .expect("Failed to acquire packet_id");
     let sub_opts = mqtt_ep::packet::SubOpts::new().set_qos(mqtt_ep::packet::Qos::AtLeastOnce);
-    let sub_entry = mqtt_ep::packet::SubEntry::new("test/topic", sub_opts)
-        .expect("Failed to create SubEntry");
+    let sub_entry =
+        mqtt_ep::packet::SubEntry::new("test/topic", sub_opts).expect("Failed to create SubEntry");
     let subscribe = mqtt_ep::packet::v5_0::Subscribe::builder()
         .packet_id(sub_packet_id)
         .entries(vec![sub_entry])
@@ -859,10 +839,7 @@ async fn test_message_cleanup_with_clean_start_v5_0() {
         .expect("Failed to send CONNECT");
 
     // Receive CONNACK - session should NOT be present
-    let packet = subscriber2
-        .recv()
-        .await
-        .expect("Failed to receive CONNACK");
+    let packet = subscriber2.recv().await.expect("Failed to receive CONNACK");
     match packet {
         mqtt_ep::packet::Packet::V5_0Connack(connack) => {
             assert_eq!(connack.session_present(), false);
@@ -871,15 +848,12 @@ async fn test_message_cleanup_with_clean_start_v5_0() {
     }
 
     // Should NOT receive any messages (session and offline messages were cleared)
-    match tokio::time::timeout(
-        tokio::time::Duration::from_millis(500),
-        subscriber2.recv(),
-    )
-    .await
-    {
+    match tokio::time::timeout(tokio::time::Duration::from_millis(500), subscriber2.recv()).await {
         Ok(_) => panic!("Should not receive any message"),
         Err(_) => {
-            println!("✅ No messages received as expected (session was cleared by clean_start=true)");
+            println!(
+                "✅ No messages received as expected (session was cleared by clean_start=true)"
+            );
         }
     }
 }
@@ -954,10 +928,7 @@ async fn test_message_cleanup_with_clean_session_v3_1_1() {
         .send(sub_connect1)
         .await
         .expect("Failed to send CONNECT");
-    let _ = subscriber1
-        .recv()
-        .await
-        .expect("Failed to receive CONNACK");
+    let _ = subscriber1.recv().await.expect("Failed to receive CONNACK");
 
     // Subscribe to topic
     let sub_packet_id = subscriber1
@@ -965,8 +936,8 @@ async fn test_message_cleanup_with_clean_session_v3_1_1() {
         .await
         .expect("Failed to acquire packet_id");
     let sub_opts = mqtt_ep::packet::SubOpts::new().set_qos(mqtt_ep::packet::Qos::AtLeastOnce);
-    let sub_entry = mqtt_ep::packet::SubEntry::new("test/topic", sub_opts)
-        .expect("Failed to create SubEntry");
+    let sub_entry =
+        mqtt_ep::packet::SubEntry::new("test/topic", sub_opts).expect("Failed to create SubEntry");
     let subscribe = mqtt_ep::packet::v3_1_1::Subscribe::builder()
         .packet_id(sub_packet_id)
         .entries(vec![sub_entry])
@@ -1042,10 +1013,7 @@ async fn test_message_cleanup_with_clean_session_v3_1_1() {
         .expect("Failed to send CONNECT");
 
     // Receive CONNACK - session should NOT be present
-    let packet = subscriber2
-        .recv()
-        .await
-        .expect("Failed to receive CONNACK");
+    let packet = subscriber2.recv().await.expect("Failed to receive CONNACK");
     match packet {
         mqtt_ep::packet::Packet::V3_1_1Connack(connack) => {
             assert_eq!(connack.session_present(), false);
@@ -1054,15 +1022,12 @@ async fn test_message_cleanup_with_clean_session_v3_1_1() {
     }
 
     // Should NOT receive any messages
-    match tokio::time::timeout(
-        tokio::time::Duration::from_millis(500),
-        subscriber2.recv(),
-    )
-    .await
-    {
+    match tokio::time::timeout(tokio::time::Duration::from_millis(500), subscriber2.recv()).await {
         Ok(_) => panic!("Should not receive any message"),
         Err(_) => {
-            println!("✅ No messages received as expected (session was cleared by clean_session=true)");
+            println!(
+                "✅ No messages received as expected (session was cleared by clean_session=true)"
+            );
         }
     }
 }
