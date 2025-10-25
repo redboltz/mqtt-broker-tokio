@@ -85,7 +85,7 @@ async fn test_same_endpoint_multiple_subscriptions() {
         .await
         .unwrap();
 
-    let subscriptions = store.find_subscribers("a/b").await;
+    let subscriptions = store.find_subscribers("a/b", None::<fn(&crate::session_store::SessionRef, &str) -> bool>).await;
 
     // Should get 3 subscriptions for the same endpoint
     assert_eq!(subscriptions.len(), 3);
@@ -137,7 +137,7 @@ async fn test_qos_and_sub_id_overwrite() {
         .await
         .unwrap();
 
-    let subscriptions = store.find_subscribers("test/topic").await;
+    let subscriptions = store.find_subscribers("test/topic", None::<fn(&crate::session_store::SessionRef, &str) -> bool>).await;
     assert_eq!(subscriptions.len(), 1);
     assert_eq!(subscriptions[0].qos, mqtt_ep::packet::Qos::AtMostOnce);
     assert_eq!(subscriptions[0].sub_id, Some(100));
@@ -155,7 +155,7 @@ async fn test_qos_and_sub_id_overwrite() {
         .await
         .unwrap();
 
-    let subscriptions = store.find_subscribers("test/topic").await;
+    let subscriptions = store.find_subscribers("test/topic", None::<fn(&crate::session_store::SessionRef, &str) -> bool>).await;
     assert_eq!(subscriptions.len(), 1); // Still only one subscription
     assert_eq!(subscriptions[0].qos, mqtt_ep::packet::Qos::ExactlyOnce);
     assert_eq!(subscriptions[0].sub_id, Some(200));
@@ -202,7 +202,7 @@ async fn test_partial_unsubscribe() {
         .unwrap();
 
     // Verify all match
-    let subscriptions = store.find_subscribers("sensor/room1/temperature").await;
+    let subscriptions = store.find_subscribers("sensor/room1/temperature", None::<fn(&crate::session_store::SessionRef, &str) -> bool>).await;
     assert_eq!(subscriptions.len(), 3);
 
     // Unsubscribe from one pattern
@@ -213,7 +213,7 @@ async fn test_partial_unsubscribe() {
     assert!(removed);
 
     // Verify only the unsubscribed pattern is removed
-    let subscriptions = store.find_subscribers("sensor/room1/temperature").await;
+    let subscriptions = store.find_subscribers("sensor/room1/temperature", None::<fn(&crate::session_store::SessionRef, &str) -> bool>).await;
     assert_eq!(subscriptions.len(), 2);
 
     let topic_filters: Vec<String> = subscriptions
@@ -244,20 +244,20 @@ async fn test_complex_wildcard_patterns() {
         .unwrap();
 
     // Should match
-    let subscriptions = store.find_subscribers("a/b/c/d/e").await;
+    let subscriptions = store.find_subscribers("a/b/c/d/e", None::<fn(&crate::session_store::SessionRef, &str) -> bool>).await;
     assert_eq!(subscriptions.len(), 1);
 
-    let subscriptions = store.find_subscribers("a/x/c/y/e").await;
+    let subscriptions = store.find_subscribers("a/x/c/y/e", None::<fn(&crate::session_store::SessionRef, &str) -> bool>).await;
     assert_eq!(subscriptions.len(), 1);
 
     // Should not match
-    let subscriptions = store.find_subscribers("a/b/c/d").await; // Missing 'e'
+    let subscriptions = store.find_subscribers("a/b/c/d", None::<fn(&crate::session_store::SessionRef, &str) -> bool>).await; // Missing 'e'
     assert_eq!(subscriptions.len(), 0);
 
-    let subscriptions = store.find_subscribers("a/b/c/d/e/f").await; // Too deep
+    let subscriptions = store.find_subscribers("a/b/c/d/e/f", None::<fn(&crate::session_store::SessionRef, &str) -> bool>).await; // Too deep
     assert_eq!(subscriptions.len(), 0);
 
-    let subscriptions = store.find_subscribers("a/b/x/d/e").await; // Wrong middle segment
+    let subscriptions = store.find_subscribers("a/b/x/d/e", None::<fn(&crate::session_store::SessionRef, &str) -> bool>).await; // Wrong middle segment
     assert_eq!(subscriptions.len(), 0);
 }
 
@@ -280,27 +280,27 @@ async fn test_mixed_wildcard_pattern() {
         .unwrap();
 
     // Should NOT match "a/b" (no trailing slash, # needs at least one more level)
-    let subscriptions = store.find_subscribers("a/b").await;
+    let subscriptions = store.find_subscribers("a/b", None::<fn(&crate::session_store::SessionRef, &str) -> bool>).await;
     assert_eq!(subscriptions.len(), 0);
 
     // Should match "a/b/" (with trailing level)
-    let subscriptions = store.find_subscribers("a/b/").await;
+    let subscriptions = store.find_subscribers("a/b/", None::<fn(&crate::session_store::SessionRef, &str) -> bool>).await;
     assert_eq!(subscriptions.len(), 1);
 
     // Should match "a/b/c"
-    let subscriptions = store.find_subscribers("a/b/c").await;
+    let subscriptions = store.find_subscribers("a/b/c", None::<fn(&crate::session_store::SessionRef, &str) -> bool>).await;
     assert_eq!(subscriptions.len(), 1);
 
     // Should match "a/b/c/d/e/f"
-    let subscriptions = store.find_subscribers("a/b/c/d/e/f").await;
+    let subscriptions = store.find_subscribers("a/b/c/d/e/f", None::<fn(&crate::session_store::SessionRef, &str) -> bool>).await;
     assert_eq!(subscriptions.len(), 1);
 
     // Should NOT match "a" (needs the + level)
-    let subscriptions = store.find_subscribers("a").await;
+    let subscriptions = store.find_subscribers("a", None::<fn(&crate::session_store::SessionRef, &str) -> bool>).await;
     assert_eq!(subscriptions.len(), 0);
 
     // Should NOT match "b/x/y" (wrong prefix)
-    let subscriptions = store.find_subscribers("b/x/y").await;
+    let subscriptions = store.find_subscribers("b/x/y", None::<fn(&crate::session_store::SessionRef, &str) -> bool>).await;
     assert_eq!(subscriptions.len(), 0);
 }
 
@@ -323,13 +323,13 @@ async fn test_root_multilevel_wildcard() {
         .unwrap();
 
     // Should match everything
-    let subscriptions = store.find_subscribers("a").await;
+    let subscriptions = store.find_subscribers("a", None::<fn(&crate::session_store::SessionRef, &str) -> bool>).await;
     assert_eq!(subscriptions.len(), 1);
 
-    let subscriptions = store.find_subscribers("a/b/c/d").await;
+    let subscriptions = store.find_subscribers("a/b/c/d", None::<fn(&crate::session_store::SessionRef, &str) -> bool>).await;
     assert_eq!(subscriptions.len(), 1);
 
-    let subscriptions = store.find_subscribers("sensor/room1/temperature").await;
+    let subscriptions = store.find_subscribers("sensor/room1/temperature", None::<fn(&crate::session_store::SessionRef, &str) -> bool>).await;
     assert_eq!(subscriptions.len(), 1);
 }
 
@@ -363,7 +363,7 @@ async fn test_empty_segment_handling() {
         .unwrap();
 
     // Should match exactly
-    let subscriptions = store.find_subscribers("a//b").await;
+    let subscriptions = store.find_subscribers("a//b", None::<fn(&crate::session_store::SessionRef, &str) -> bool>).await;
     assert_eq!(subscriptions.len(), 2); // Both patterns should match
 
     // The + should match empty segment
@@ -405,7 +405,7 @@ async fn test_multiple_endpoints_same_pattern() {
         .await
         .unwrap();
 
-    let subscriptions = store.find_subscribers("test/topic").await;
+    let subscriptions = store.find_subscribers("test/topic", None::<fn(&crate::session_store::SessionRef, &str) -> bool>).await;
     assert_eq!(subscriptions.len(), 2);
 
     // Verify different sessions
@@ -445,7 +445,7 @@ async fn test_subscription_with_none_sub_id() {
         .await
         .unwrap();
 
-    let subscriptions = store.find_subscribers("test/topic").await;
+    let subscriptions = store.find_subscribers("test/topic", None::<fn(&crate::session_store::SessionRef, &str) -> bool>).await;
     assert_eq!(subscriptions.len(), 1);
     assert_eq!(subscriptions[0].sub_id, None);
 }

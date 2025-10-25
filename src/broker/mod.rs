@@ -716,6 +716,7 @@ impl BrokerManager {
                     retained_store,
                     session_store,
                     session_ref,
+                    security,
                 )
                 .await?;
             }
@@ -754,6 +755,7 @@ impl BrokerManager {
                     retained_store,
                     session_store,
                     session_ref,
+                    security,
                 )
                 .await?;
             }

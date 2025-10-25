@@ -263,7 +263,183 @@ impl BrokerManager {
         retained_store: &Arc<RetainedStore>,
         session_store: &Arc<SessionStore>,
         publisher_session_ref: &crate::session_store::SessionRef,
+        security: &Option<std::sync::Arc<crate::auth_impl::Security>>,
     ) -> anyhow::Result<()> {
+        use crate::auth_impl::AuthorizationType;
+        use tracing::error;
+
+        // Check PUBLISH authorization if security is configured
+        if let Some(ref sec) = security {
+            if let Some(ref username) = publisher_session_ref.session_id.user_name {
+                match sec.auth_pub(topic, username) {
+                    AuthorizationType::Allow => {
+                        trace!("Authorization: user '{username}' allowed to publish to '{topic}'");
+                    }
+                    AuthorizationType::Deny => {
+                        error!("Authorization: user '{username}' denied to publish to '{topic}'");
+                        // Send NotAuthorized response and return
+                        let endpoint_version = endpoint
+                            .get_protocol_version()
+                            .await
+                            .unwrap_or(mqtt_ep::Version::V5_0);
+
+                        match qos {
+                            mqtt_ep::packet::Qos::AtMostOnce => {
+                                // QoS 0: No response, just drop
+                            }
+                            mqtt_ep::packet::Qos::AtLeastOnce => {
+                                // QoS 1: Send PUBACK with NotAuthorized
+                                if endpoint_version == mqtt_ep::Version::V5_0 {
+                                    Self::send_puback(
+                                        endpoint,
+                                        packet_id,
+                                        mqtt_ep::result_code::PubackReasonCode::NotAuthorized,
+                                        Vec::new(),
+                                    )
+                                    .await?;
+                                } else {
+                                    // v3.1.1 doesn't have NotAuthorized in PUBACK, just send success
+                                    Self::send_puback(
+                                        endpoint,
+                                        packet_id,
+                                        mqtt_ep::result_code::PubackReasonCode::Success,
+                                        Vec::new(),
+                                    )
+                                    .await?;
+                                }
+                            }
+                            mqtt_ep::packet::Qos::ExactlyOnce => {
+                                // QoS 2: Send PUBREC with NotAuthorized
+                                if endpoint_version == mqtt_ep::Version::V5_0 {
+                                    Self::send_pubrec(
+                                        endpoint,
+                                        packet_id,
+                                        mqtt_ep::result_code::PubrecReasonCode::NotAuthorized,
+                                        Vec::new(),
+                                    )
+                                    .await?;
+                                } else {
+                                    // v3.1.1 doesn't have NotAuthorized in PUBREC, just send success
+                                    Self::send_pubrec(
+                                        endpoint,
+                                        packet_id,
+                                        mqtt_ep::result_code::PubrecReasonCode::Success,
+                                        Vec::new(),
+                                    )
+                                    .await?;
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
+                    AuthorizationType::None => {
+                        error!(
+                            "Authorization: no rule found for user '{username}' on publish to '{topic}', denying by default"
+                        );
+                        // Same as Deny
+                        let endpoint_version = endpoint
+                            .get_protocol_version()
+                            .await
+                            .unwrap_or(mqtt_ep::Version::V5_0);
+
+                        match qos {
+                            mqtt_ep::packet::Qos::AtMostOnce => {}
+                            mqtt_ep::packet::Qos::AtLeastOnce => {
+                                if endpoint_version == mqtt_ep::Version::V5_0 {
+                                    Self::send_puback(
+                                        endpoint,
+                                        packet_id,
+                                        mqtt_ep::result_code::PubackReasonCode::NotAuthorized,
+                                        Vec::new(),
+                                    )
+                                    .await?;
+                                } else {
+                                    Self::send_puback(
+                                        endpoint,
+                                        packet_id,
+                                        mqtt_ep::result_code::PubackReasonCode::Success,
+                                        Vec::new(),
+                                    )
+                                    .await?;
+                                }
+                            }
+                            mqtt_ep::packet::Qos::ExactlyOnce => {
+                                if endpoint_version == mqtt_ep::Version::V5_0 {
+                                    Self::send_pubrec(
+                                        endpoint,
+                                        packet_id,
+                                        mqtt_ep::result_code::PubrecReasonCode::NotAuthorized,
+                                        Vec::new(),
+                                    )
+                                    .await?;
+                                } else {
+                                    Self::send_pubrec(
+                                        endpoint,
+                                        packet_id,
+                                        mqtt_ep::result_code::PubrecReasonCode::Success,
+                                        Vec::new(),
+                                    )
+                                    .await?;
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
+                }
+            } else {
+                error!("Authorization: no username in session, denying publish to '{topic}'");
+                // No username, deny
+                let endpoint_version = endpoint
+                    .get_protocol_version()
+                    .await
+                    .unwrap_or(mqtt_ep::Version::V5_0);
+
+                match qos {
+                    mqtt_ep::packet::Qos::AtMostOnce => {}
+                    mqtt_ep::packet::Qos::AtLeastOnce => {
+                        if endpoint_version == mqtt_ep::Version::V5_0 {
+                            Self::send_puback(
+                                endpoint,
+                                packet_id,
+                                mqtt_ep::result_code::PubackReasonCode::NotAuthorized,
+                                Vec::new(),
+                            )
+                            .await?;
+                        } else {
+                            Self::send_puback(
+                                endpoint,
+                                packet_id,
+                                mqtt_ep::result_code::PubackReasonCode::Success,
+                                Vec::new(),
+                            )
+                            .await?;
+                        }
+                    }
+                    mqtt_ep::packet::Qos::ExactlyOnce => {
+                        if endpoint_version == mqtt_ep::Version::V5_0 {
+                            Self::send_pubrec(
+                                endpoint,
+                                packet_id,
+                                mqtt_ep::result_code::PubrecReasonCode::NotAuthorized,
+                                Vec::new(),
+                            )
+                            .await?;
+                        } else {
+                            Self::send_pubrec(
+                                endpoint,
+                                packet_id,
+                                mqtt_ep::result_code::PubrecReasonCode::Success,
+                                Vec::new(),
+                            )
+                            .await?;
+                        }
+                    }
+                }
+                return Ok(());
+            }
+        }
+
+        // Authorization passed or no security configured, proceed with publish
         // Convert to ArcPayload early for retained message storage
         let arc_payload = payload.into_payload();
 
@@ -282,7 +458,20 @@ impl BrokerManager {
             }
         }
 
-        let subscriptions = subscription_store.find_subscribers(topic).await;
+        // Create authorization checker if security is configured
+        let auth_checker = security.as_ref().map(|sec| {
+            let sec_clone = Arc::clone(sec);
+            move |session_ref: &crate::session_store::SessionRef, topic: &str| {
+                if let Some(ref username) = session_ref.session_id.user_name {
+                    use crate::auth_impl::AuthorizationType;
+                    matches!(sec_clone.auth_sub(topic, username), AuthorizationType::Allow)
+                } else {
+                    false
+                }
+            }
+        });
+
+        let subscriptions = subscription_store.find_subscribers(topic, auth_checker).await;
         let has_subscribers = !subscriptions.is_empty();
 
         if !has_subscribers {

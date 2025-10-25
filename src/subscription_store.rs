@@ -467,7 +467,21 @@ impl SubscriptionStore {
     }
 
     /// Find all subscriber endpoints for a given published topic
-    pub async fn find_subscribers(&self, topic: &str) -> Vec<Subscription> {
+    ///
+    /// # Arguments
+    /// * `topic` - The topic to match subscribers against
+    /// * `auth_checker` - Optional authorization checker function that returns true if a subscriber is authorized
+    ///
+    /// # Returns
+    /// Vector of subscriptions for subscribers that match and are authorized (if checker provided)
+    pub async fn find_subscribers<F>(
+        &self,
+        topic: &str,
+        auth_checker: Option<F>,
+    ) -> Vec<Subscription>
+    where
+        F: Fn(&SessionRef, &str) -> bool + Clone,
+    {
         // Get regular subscribers
         let root = self.root.read().await;
         let mut all_subscribers = Vec::new();
@@ -482,7 +496,34 @@ impl SubscriptionStore {
         let mut shared_subs = self.shared_subscriptions.write().await;
 
         // Find all matching shared subscriptions using the SharedSubscriptionManager
-        let shared_matches = shared_subs.find_all_targets(&segments, Self::topic_matches_filter);
+        // For performance optimization: only apply client filter for wildcard + auth_checker
+        // We need to check if any subscription might have wildcard BEFORE calling find_all_targets
+        // to avoid consuming turn counter twice
+        let shared_matches = if let Some(ref checker) = auth_checker {
+            // Check if any subscription group has a wildcard filter that could match this topic
+            // This is a heuristic: we check if the topic has multiple segments which might match wildcards
+            let might_match_wildcard = segments.len() > 1;
+
+            if might_match_wildcard {
+                // Use authorization filter to be safe
+                let checker_clone = checker.clone();
+                let topic_owned = topic.to_string();
+                shared_subs.find_all_targets_with_filter(
+                    &segments,
+                    Self::topic_matches_filter,
+                    move |session_ref| {
+                        // Check if this client has authorization to receive this topic
+                        checker_clone(session_ref, &topic_owned)
+                    },
+                )
+            } else {
+                // Single segment topic unlikely to match wildcards with different permissions
+                shared_subs.find_all_targets(&segments, Self::topic_matches_filter)
+            }
+        } else {
+            // No auth_checker, use normal find
+            shared_subs.find_all_targets(&segments, Self::topic_matches_filter)
+        };
 
         for (_share_name, session_ref, details) in shared_matches {
             result.push(Subscription {

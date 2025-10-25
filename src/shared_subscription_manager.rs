@@ -192,6 +192,27 @@ impl SharedSubscriptionManager {
         share_name: &str,
         topic_filter: &str,
     ) -> Option<(SessionRef, SubscriptionDetails)> {
+        self.get_target_with_filter(share_name, topic_filter, |_| true)
+    }
+
+    /// Get target with client filter function
+    ///
+    /// # Arguments
+    /// * `share_name` - The share name
+    /// * `topic_filter` - The topic filter
+    /// * `client_filter` - Function to filter eligible clients (takes SessionRef)
+    ///
+    /// # Returns
+    /// The selected client's session ref and subscription details
+    pub fn get_target_with_filter<F>(
+        &mut self,
+        share_name: &str,
+        topic_filter: &str,
+        client_filter: F,
+    ) -> Option<(SessionRef, SubscriptionDetails)>
+    where
+        F: Fn(&SessionRef) -> bool,
+    {
         let group = self.groups.get_mut(share_name)?;
 
         if group.clients.is_empty() {
@@ -208,7 +229,9 @@ impl SharedSubscriptionManager {
         let mut candidates: Vec<(&String, &ClientEntry)> = group
             .clients
             .iter()
-            .filter(|(_id, entry)| entry.subscriptions.contains_key(topic_filter))
+            .filter(|(_id, entry)| {
+                entry.subscriptions.contains_key(topic_filter) && client_filter(&entry.session_ref)
+            })
             .collect();
 
         // Sort by (counter, client_id) for deterministic selection
@@ -263,6 +286,28 @@ impl SharedSubscriptionManager {
     where
         F: Fn(&[&str], &[&str]) -> bool,
     {
+        self.find_all_targets_with_filter(topic_segments, topic_matches_filter, |_| true)
+    }
+
+    /// Find targets for a topic across all share groups with client filter
+    ///
+    /// # Arguments
+    /// * `topic_segments` - The topic segments to match against
+    /// * `topic_matches_filter` - Function to check if topic matches a filter
+    /// * `client_filter` - Function to filter eligible clients (takes SessionRef)
+    ///
+    /// # Returns
+    /// Vector of (share_name, session_ref, details) tuples for all matching share groups
+    pub fn find_all_targets_with_filter<F, G>(
+        &mut self,
+        topic_segments: &[&str],
+        topic_matches_filter: F,
+        client_filter: G,
+    ) -> Vec<(String, SessionRef, SubscriptionDetails)>
+    where
+        F: Fn(&[&str], &[&str]) -> bool,
+        G: Fn(&SessionRef) -> bool,
+    {
         let mut results = Vec::new();
 
         // First pass: collect all (share_name, matching_filter) pairs
@@ -299,7 +344,9 @@ impl SharedSubscriptionManager {
                 continue;
             }
 
-            if let Some((session_ref, details)) = self.get_target(&share_name, &filter) {
+            if let Some((session_ref, details)) =
+                self.get_target_with_filter(&share_name, &filter, &client_filter)
+            {
                 results.push((share_name.clone(), session_ref, details));
                 processed_shares.insert(share_name);
             }
