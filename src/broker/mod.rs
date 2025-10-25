@@ -313,7 +313,6 @@ impl BrokerManager {
             password,
             session_expiry_interval,
             need_keep,
-            session_present,
             clean_start_or_session,
             assigned_client_id,
         ) = match endpoint.recv().await {
@@ -355,30 +354,6 @@ impl BrokerManager {
                         let session_expiry_interval = if clean_session { 0 } else { u32::MAX };
                         let need_keep = !clean_session;
 
-                        // Create session ID
-                        let session_id = SessionId::new(user_name.clone(), extracted_id.clone());
-
-                        // Step 1: Disconnect existing online session if any (session takeover)
-                        session_store.disconnect_existing_session(&session_id).await;
-
-                        // Step 2: Check if session exists after disconnect
-                        let existing_session = session_store.get_session(&session_id).await;
-
-                        let session_present = if clean_session {
-                            // Clean session: remove existing session if any
-                            if existing_session.is_some() {
-                                session_store.remove_session(&session_id).await;
-                            }
-                            false
-                        } else {
-                            // Check if session exists
-                            existing_session.is_some()
-                        };
-
-                        trace!(
-                            "Session takeover complete for {extracted_id}, session_present={session_present}"
-                        );
-
                         // v3.1.1 doesn't use Assigned Client Identifier property
                         (
                             extracted_id,
@@ -386,7 +361,6 @@ impl BrokerManager {
                             password,
                             session_expiry_interval,
                             need_keep,
-                            session_present,
                             clean_session,
                             None,
                         )
@@ -427,37 +401,12 @@ impl BrokerManager {
                             "MQTT v5.0 client {extracted_id} connected, clean_start={clean_start}, session_expiry_interval={session_expiry_interval}"
                         );
 
-                        // Create session ID
-                        let session_id = SessionId::new(user_name.clone(), extracted_id.clone());
-
-                        // Step 1: Disconnect existing online session if any (session takeover)
-                        session_store.disconnect_existing_session(&session_id).await;
-
-                        // Step 2: Check if session exists after disconnect
-                        let existing_session = session_store.get_session(&session_id).await;
-
-                        let session_present = if clean_start {
-                            // Clean start: remove existing session if any
-                            if existing_session.is_some() {
-                                session_store.remove_session(&session_id).await;
-                            }
-                            false
-                        } else {
-                            // Check if session exists
-                            existing_session.is_some()
-                        };
-
-                        trace!(
-                            "Session takeover complete for {extracted_id}, session_present={session_present}"
-                        );
-
                         (
                             extracted_id,
                             user_name,
                             password,
                             session_expiry_interval,
                             need_keep,
-                            session_present,
                             clean_start,
                             assigned_client_id,
                         )
@@ -532,6 +481,27 @@ impl BrokerManager {
 
         // Create session ID with authenticated username
         let session_id = SessionId::new(authenticated_username, client_id.clone());
+
+        // Step 1: Disconnect existing online session if any (session takeover)
+        session_store.disconnect_existing_session(&session_id).await;
+
+        // Step 2: Check if session exists after disconnect
+        let existing_session = session_store.get_session(&session_id).await;
+
+        let session_present = if clean_start_or_session {
+            // Clean session/start: remove existing session if any
+            if existing_session.is_some() {
+                session_store.remove_session(&session_id).await;
+            }
+            false
+        } else {
+            // Check if session exists
+            existing_session.is_some()
+        };
+
+        trace!(
+            "Session takeover complete for {client_id}, session_present={session_present}"
+        );
 
         // Handle session creation or restoration
         let session = if session_present && !clean_start_or_session {
