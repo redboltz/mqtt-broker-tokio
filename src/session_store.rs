@@ -333,6 +333,8 @@ impl SessionRef {
 pub struct SessionStore {
     /// Sessions indexed by SessionId
     sessions: Arc<RwLock<HashMap<SessionId, Arc<RwLock<Session>>>>>,
+    /// Set of all active Response Topics for fast lookup
+    response_topics: Arc<RwLock<std::collections::HashSet<String>>>,
 }
 
 impl SessionStore {
@@ -340,7 +342,26 @@ impl SessionStore {
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            response_topics: Arc::new(RwLock::new(std::collections::HashSet::new())),
         }
+    }
+
+    /// Check if a topic is a Response Topic
+    pub async fn is_response_topic(&self, topic: &str) -> bool {
+        let topics = self.response_topics.read().await;
+        topics.contains(topic)
+    }
+
+    /// Register a Response Topic
+    pub async fn register_response_topic(&self, topic: String) {
+        let mut topics = self.response_topics.write().await;
+        topics.insert(topic);
+    }
+
+    /// Unregister a Response Topic
+    pub async fn unregister_response_topic(&self, topic: &str) {
+        let mut topics = self.response_topics.write().await;
+        topics.remove(topic);
     }
 
     /// Get or create a session
@@ -385,7 +406,21 @@ impl SessionStore {
     /// Remove session
     pub async fn remove_session(&self, session_id: &SessionId) -> Option<Arc<RwLock<Session>>> {
         let mut sessions = self.sessions.write().await;
-        sessions.remove(session_id)
+        let removed = sessions.remove(session_id);
+
+        // Unregister Response Topic if exists
+        if let Some(ref session_arc) = removed {
+            let session_guard = session_arc.read().await;
+            let response_topic = session_guard.response_topic().map(|s| s.to_string());
+            drop(session_guard);
+            drop(sessions);
+
+            if let Some(topic) = response_topic {
+                self.unregister_response_topic(&topic).await;
+            }
+        }
+
+        removed
     }
 
     /// Get all session IDs

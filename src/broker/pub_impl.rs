@@ -269,8 +269,8 @@ impl BrokerManager {
         use tracing::error;
 
         // Check PUBLISH authorization if security is configured
-        // Special case: Response Topics ($response/*) are always allowed for publishing
-        let is_response_topic = topic.starts_with("$response/");
+        // Special case: Response Topics are always allowed for publishing (any user)
+        let is_response_topic = session_store.is_response_topic(topic).await;
 
         if let Some(ref sec) = security {
             if is_response_topic {

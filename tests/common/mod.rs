@@ -52,6 +52,7 @@ impl BrokerProcess {
         // Run the built binary directly
         let child = Command::new(broker_path)
             .args(["--tcp-port", &port.to_string()])
+            .env("RUST_LOG", "trace")
             .spawn()
             .expect("Failed to start broker");
 
