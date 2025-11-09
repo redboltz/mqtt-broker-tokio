@@ -320,3 +320,254 @@ async fn test_session_persistence_v3_1_1() {
         _ => panic!("Expected CONNACK, got {packet:?}"),
     }
 }
+
+/// Test: Session expiry timeout (v5.0)
+/// Verifies that sessions are automatically deleted after SessionExpiryInterval timeout
+#[tokio::test]
+async fn test_session_expiry_timeout_v5_0() {
+    let broker = BrokerProcess::start();
+    broker.wait_ready().await;
+
+    // First connection with SessionExpiryInterval=3 seconds
+    let stream1 = mqtt_ep::transport::connect_helper::connect_tcp(
+        &format!("127.0.0.1:{}", broker.port()),
+        Some(tokio::time::Duration::from_secs(10)),
+    )
+    .await
+    .expect("Failed to connect to broker");
+
+    let client1 = mqtt_ep::Endpoint::<mqtt_ep::role::Client>::new(mqtt_ep::Version::V5_0);
+    let transport1 = mqtt_ep::transport::TcpTransport::from_stream(stream1);
+
+    let opts = mqtt_ep::connection_option::ConnectionOption::builder()
+        .build()
+        .expect("Failed to build connection options");
+    client1
+        .attach_with_options(transport1, mqtt_ep::Mode::Client, opts)
+        .await
+        .expect("Failed to attach transport");
+
+    let connect1 = mqtt_ep::packet::v5_0::Connect::builder()
+        .client_id("test_expiry")
+        .expect("Failed to set client_id")
+        .clean_start(true)
+        .keep_alive(60)
+        .props(vec![mqtt_ep::packet::Property::SessionExpiryInterval(
+            mqtt_ep::packet::SessionExpiryInterval::new(3).unwrap(),
+        )])
+        .build()
+        .expect("Failed to build CONNECT");
+
+    client1
+        .send(connect1)
+        .await
+        .expect("Failed to send CONNECT");
+
+    // Receive CONNACK
+    let packet = client1.recv().await.expect("Failed to receive CONNACK");
+    match packet {
+        mqtt_ep::packet::Packet::V5_0Connack(connack) => {
+            // First connection: session_present=false
+            assert_eq!(connack.session_present(), false);
+        }
+        _ => panic!("Expected CONNACK, got {packet:?}"),
+    }
+
+    // Disconnect client1
+    client1.close().await.expect("Failed to close connection");
+
+    // Wait for session to expire (3 seconds + buffer)
+    tokio::time::sleep(tokio::time::Duration::from_secs(4)).await;
+
+    // Second connection with clean_start=false (should find no existing session)
+    let stream2 = mqtt_ep::transport::connect_helper::connect_tcp(
+        &format!("127.0.0.1:{}", broker.port()),
+        Some(tokio::time::Duration::from_secs(10)),
+    )
+    .await
+    .expect("Failed to connect to broker");
+
+    let client2 = mqtt_ep::Endpoint::<mqtt_ep::role::Client>::new(mqtt_ep::Version::V5_0);
+    let transport2 = mqtt_ep::transport::TcpTransport::from_stream(stream2);
+
+    let opts = mqtt_ep::connection_option::ConnectionOption::builder()
+        .build()
+        .expect("Failed to build connection options");
+    client2
+        .attach_with_options(transport2, mqtt_ep::Mode::Client, opts)
+        .await
+        .expect("Failed to attach transport");
+
+    let connect2 = mqtt_ep::packet::v5_0::Connect::builder()
+        .client_id("test_expiry")
+        .expect("Failed to set client_id")
+        .clean_start(false)
+        .keep_alive(60)
+        .props(vec![mqtt_ep::packet::Property::SessionExpiryInterval(
+            mqtt_ep::packet::SessionExpiryInterval::new(3).unwrap(),
+        )])
+        .build()
+        .expect("Failed to build CONNECT");
+
+    client2
+        .send(connect2)
+        .await
+        .expect("Failed to send CONNECT");
+
+    // Receive CONNACK
+    let packet = client2.recv().await.expect("Failed to receive CONNACK");
+    match packet {
+        mqtt_ep::packet::Packet::V5_0Connack(connack) => {
+            // Session should NOT be present (expired after 3 seconds)
+            assert_eq!(connack.session_present(), false);
+        }
+        _ => panic!("Expected CONNACK, got {packet:?}"),
+    }
+}
+
+/// Test: Session expiry timer cancellation on reconnect (v5.0)
+/// Verifies that the expiry timer is cancelled when a client reconnects before timeout
+#[tokio::test]
+async fn test_session_expiry_timer_cancel_v5_0() {
+    let broker = BrokerProcess::start();
+    broker.wait_ready().await;
+
+    // First connection with SessionExpiryInterval=5 seconds
+    let stream1 = mqtt_ep::transport::connect_helper::connect_tcp(
+        &format!("127.0.0.1:{}", broker.port()),
+        Some(tokio::time::Duration::from_secs(10)),
+    )
+    .await
+    .expect("Failed to connect to broker");
+
+    let client1 = mqtt_ep::Endpoint::<mqtt_ep::role::Client>::new(mqtt_ep::Version::V5_0);
+    let transport1 = mqtt_ep::transport::TcpTransport::from_stream(stream1);
+
+    let opts = mqtt_ep::connection_option::ConnectionOption::builder()
+        .build()
+        .expect("Failed to build connection options");
+    client1
+        .attach_with_options(transport1, mqtt_ep::Mode::Client, opts)
+        .await
+        .expect("Failed to attach transport");
+
+    let connect1 = mqtt_ep::packet::v5_0::Connect::builder()
+        .client_id("test_timer_cancel")
+        .expect("Failed to set client_id")
+        .clean_start(true)
+        .keep_alive(60)
+        .props(vec![mqtt_ep::packet::Property::SessionExpiryInterval(
+            mqtt_ep::packet::SessionExpiryInterval::new(5).unwrap(),
+        )])
+        .build()
+        .expect("Failed to build CONNECT");
+
+    client1
+        .send(connect1)
+        .await
+        .expect("Failed to send CONNECT");
+
+    let _ = client1.recv().await.expect("Failed to receive CONNACK");
+
+    // Disconnect client1
+    client1.close().await.expect("Failed to close connection");
+
+    // Wait 2 seconds (less than expiry interval)
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+    // Reconnect before expiry (timer should be cancelled)
+    let stream2 = mqtt_ep::transport::connect_helper::connect_tcp(
+        &format!("127.0.0.1:{}", broker.port()),
+        Some(tokio::time::Duration::from_secs(10)),
+    )
+    .await
+    .expect("Failed to connect to broker");
+
+    let client2 = mqtt_ep::Endpoint::<mqtt_ep::role::Client>::new(mqtt_ep::Version::V5_0);
+    let transport2 = mqtt_ep::transport::TcpTransport::from_stream(stream2);
+
+    let opts = mqtt_ep::connection_option::ConnectionOption::builder()
+        .build()
+        .expect("Failed to build connection options");
+    client2
+        .attach_with_options(transport2, mqtt_ep::Mode::Client, opts)
+        .await
+        .expect("Failed to attach transport");
+
+    let connect2 = mqtt_ep::packet::v5_0::Connect::builder()
+        .client_id("test_timer_cancel")
+        .expect("Failed to set client_id")
+        .clean_start(false)
+        .keep_alive(60)
+        .props(vec![mqtt_ep::packet::Property::SessionExpiryInterval(
+            mqtt_ep::packet::SessionExpiryInterval::new(5).unwrap(),
+        )])
+        .build()
+        .expect("Failed to build CONNECT");
+
+    client2
+        .send(connect2)
+        .await
+        .expect("Failed to send CONNECT");
+
+    // Receive CONNACK
+    let packet = client2.recv().await.expect("Failed to receive CONNACK");
+    match packet {
+        mqtt_ep::packet::Packet::V5_0Connack(connack) => {
+            // Session should be present (reconnected before expiry)
+            assert_eq!(connack.session_present(), true);
+        }
+        _ => panic!("Expected CONNACK, got {packet:?}"),
+    }
+
+    // Disconnect again
+    client2.close().await.expect("Failed to close connection");
+
+    // Wait for new expiry timer to expire
+    tokio::time::sleep(tokio::time::Duration::from_secs(6)).await;
+
+    // Reconnect after second expiry
+    let stream3 = mqtt_ep::transport::connect_helper::connect_tcp(
+        &format!("127.0.0.1:{}", broker.port()),
+        Some(tokio::time::Duration::from_secs(10)),
+    )
+    .await
+    .expect("Failed to connect to broker");
+
+    let client3 = mqtt_ep::Endpoint::<mqtt_ep::role::Client>::new(mqtt_ep::Version::V5_0);
+    let transport3 = mqtt_ep::transport::TcpTransport::from_stream(stream3);
+
+    let opts = mqtt_ep::connection_option::ConnectionOption::builder()
+        .build()
+        .expect("Failed to build connection options");
+    client3
+        .attach_with_options(transport3, mqtt_ep::Mode::Client, opts)
+        .await
+        .expect("Failed to attach transport");
+
+    let connect3 = mqtt_ep::packet::v5_0::Connect::builder()
+        .client_id("test_timer_cancel")
+        .expect("Failed to set client_id")
+        .clean_start(false)
+        .keep_alive(60)
+        .props(vec![mqtt_ep::packet::Property::SessionExpiryInterval(
+            mqtt_ep::packet::SessionExpiryInterval::new(5).unwrap(),
+        )])
+        .build()
+        .expect("Failed to build CONNECT");
+
+    client3
+        .send(connect3)
+        .await
+        .expect("Failed to send CONNECT");
+
+    // Receive CONNACK
+    let packet = client3.recv().await.expect("Failed to receive CONNACK");
+    match packet {
+        mqtt_ep::packet::Packet::V5_0Connack(connack) => {
+            // Session should NOT be present (expired from second disconnect)
+            assert_eq!(connack.session_present(), false);
+        }
+        _ => panic!("Expected CONNACK, got {packet:?}"),
+    }
+}

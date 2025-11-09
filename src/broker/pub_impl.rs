@@ -470,14 +470,19 @@ impl BrokerManager {
             move |session_ref: &crate::session_store::SessionRef, topic: &str| {
                 if let Some(ref username) = session_ref.session_id.user_name {
                     use crate::auth_impl::AuthorizationType;
-                    matches!(sec_clone.auth_sub(topic, username), AuthorizationType::Allow)
+                    matches!(
+                        sec_clone.auth_sub(topic, username),
+                        AuthorizationType::Allow
+                    )
                 } else {
                     false
                 }
             }
         });
 
-        let subscriptions = subscription_store.find_subscribers(topic, auth_checker).await;
+        let subscriptions = subscription_store
+            .find_subscribers(topic, auth_checker)
+            .await;
         let has_subscribers = !subscriptions.is_empty();
 
         if !has_subscribers {

@@ -21,7 +21,7 @@
 // SOFTWARE.
 use anyhow::Result;
 use tracing_appender::non_blocking::WorkerGuard;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 /// Initialize tracing with efficient async logging setup
 /// Returns a WorkerGuard that must be kept alive for the duration of the program

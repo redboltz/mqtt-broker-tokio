@@ -153,9 +153,7 @@ impl BrokerManager {
                 );
             } else {
                 // Don't add to topic_filters for unauthorized subscriptions
-                trace!(
-                    "SUBSCRIBE: subscription to '{topic_filter}' denied by authorization"
-                );
+                trace!("SUBSCRIBE: subscription to '{topic_filter}' denied by authorization");
             }
             entry_info.push((topic_filter, qos, rh, rap, nl, is_shared, authorized));
         }

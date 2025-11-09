@@ -22,7 +22,7 @@
 
 mod common;
 
-use common::{BrokerProcess, create_connected_endpoint};
+use common::{create_connected_endpoint, BrokerProcess};
 use mqtt_endpoint_tokio::mqtt_ep;
 use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
 

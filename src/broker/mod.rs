@@ -22,8 +22,9 @@
 use mqtt_endpoint_tokio::mqtt_ep;
 
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{error, info, trace};
+use tracing::{debug, error, info, trace};
 use uuid::Uuid;
 
 use crate::auth_impl::Security;
@@ -346,7 +347,9 @@ impl BrokerManager {
                             connect.client_id().to_string()
                         };
                         let user_name = connect.user_name().map(|s| s.to_string());
-                        let password = connect.password().and_then(|p| String::from_utf8(p.to_vec()).ok());
+                        let password = connect
+                            .password()
+                            .and_then(|p| String::from_utf8(p.to_vec()).ok());
                         trace!(
                             "MQTT v3.1.1 client {extracted_id} connected, clean_session={clean_session}"
                         );
@@ -381,7 +384,9 @@ impl BrokerManager {
                             None
                         };
                         let user_name = connect.user_name().map(|s| s.to_string());
-                        let password = connect.password().and_then(|p| String::from_utf8(p.to_vec()).ok());
+                        let password = connect
+                            .password()
+                            .and_then(|p| String::from_utf8(p.to_vec()).ok());
                         let clean_start = connect.clean_start();
 
                         // Extract SessionExpiryInterval from properties (default: 0)
@@ -402,7 +407,9 @@ impl BrokerManager {
                             .props()
                             .iter()
                             .find_map(|prop| {
-                                if let mqtt_ep::packet::Property::RequestResponseInformation(_) = prop {
+                                if let mqtt_ep::packet::Property::RequestResponseInformation(_) =
+                                    prop
+                                {
                                     prop.as_u8()
                                 } else {
                                     None
@@ -515,9 +522,7 @@ impl BrokerManager {
             existing_session.is_some()
         };
 
-        trace!(
-            "Session takeover complete for {client_id}, session_present={session_present}"
-        );
+        trace!("Session takeover complete for {client_id}, session_present={session_present}");
 
         // Determine Response Topic based on Request Response Information
         // Only for MQTT v5.0 (request_response_information is Some for v5.0, None for v3.1.1)
@@ -529,7 +534,9 @@ impl BrokerManager {
                     if let Some(existing) = &existing_session {
                         let existing_guard = existing.read().await;
                         if let Some(existing_topic) = existing_guard.response_topic() {
-                            trace!("Reusing existing Response Topic for {client_id}: {existing_topic}");
+                            trace!(
+                                "Reusing existing Response Topic for {client_id}: {existing_topic}"
+                            );
                             Some(existing_topic.to_string())
                         } else {
                             // Session exists but no Response Topic, generate new one
@@ -546,7 +553,10 @@ impl BrokerManager {
                 } else {
                     // New session, generate new Response Topic
                     let new_topic = format!("res_{}", uuid::Uuid::new_v4().simple());
-                    trace!("Generated new Response Topic for {client_id}: '{new_topic}' (length: {})", new_topic.len());
+                    trace!(
+                        "Generated new Response Topic for {client_id}: '{new_topic}' (length: {})",
+                        new_topic.len()
+                    );
                     Some(new_topic)
                 }
             } else {
@@ -624,7 +634,9 @@ impl BrokerManager {
 
                     // Register new Response Topic
                     if let Some(ref new_topic) = response_topic {
-                        session_store.register_response_topic(new_topic.clone()).await;
+                        session_store
+                            .register_response_topic(new_topic.clone())
+                            .await;
                         trace!("Registered Response Topic: {new_topic}");
                     }
 
@@ -679,7 +691,9 @@ impl BrokerManager {
 
             // Register new Response Topic
             if let Some(ref new_topic) = response_topic {
-                session_store.register_response_topic(new_topic.clone()).await;
+                session_store
+                    .register_response_topic(new_topic.clone())
+                    .await;
                 trace!("Registered Response Topic: {new_topic}");
             }
 
@@ -738,7 +752,41 @@ impl BrokerManager {
             // Session should persist: mark as offline
             trace!("Preserving session for client {client_id} (need_keep=true)");
             let mut session_guard = session.write().await;
+            let expiry_interval = session_guard.session_expiry_interval();
             session_guard.set_offline();
+            drop(session_guard);
+
+            // Start session expiry timer if expiry_interval > 0
+            if expiry_interval > 0 {
+                let session_id_clone = session_id.clone();
+                let session_store_clone = session_store.clone();
+                let subscription_tx_clone = subscription_tx.clone();
+                let client_id_clone = client_id.clone();
+
+                debug!(
+                    "Starting session expiry timer for {client_id_clone}: {expiry_interval} seconds"
+                );
+
+                let timer = tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(expiry_interval as u64)).await;
+
+                    debug!("Session expiry timer expired for {client_id_clone}, removing session");
+
+                    // Remove session from session store
+                    session_store_clone.remove_session(&session_id_clone).await;
+
+                    // Remove all subscriptions for this session
+                    let session_ref = SessionRef::new(session_id_clone.clone());
+                    let _ = subscription_tx_clone
+                        .send(SubscriptionMessage::ClientDisconnected { session_ref })
+                        .await;
+
+                    trace!("Session {session_id_clone} removed due to expiry");
+                });
+
+                let mut session_guard = session.write().await;
+                session_guard.set_expiry_timer(timer);
+            }
             // Don't delete subscriptions - they should persist with the session
         } else {
             // Delete session immediately
@@ -1008,7 +1056,9 @@ impl BrokerManager {
 
                 // Add Response Information property if provided
                 if let Some(response_info) = response_information {
-                    trace!("Attempting to create Response Information with value: '{response_info}'");
+                    trace!(
+                        "Attempting to create Response Information with value: '{response_info}'"
+                    );
                     match mqtt_ep::packet::ResponseInformation::new(response_info) {
                         Ok(ri) => {
                             let prop = mqtt_ep::packet::Property::ResponseInformation(ri);
@@ -1016,7 +1066,9 @@ impl BrokerManager {
                             trace!("Adding Response Information to CONNACK: {response_info}");
                         }
                         Err(e) => {
-                            error!("Failed to create Response Information for '{response_info}': {e}");
+                            error!(
+                                "Failed to create Response Information for '{response_info}': {e}"
+                            );
                         }
                     }
                 }
@@ -1076,14 +1128,18 @@ impl BrokerManager {
 
                 // Add Response Information property if provided
                 if let Some(response_info) = response_information {
-                    trace!("Attempting to create Response Information with value: '{response_info}'");
+                    trace!(
+                        "Attempting to create Response Information with value: '{response_info}'"
+                    );
                     match mqtt_ep::packet::ResponseInformation::new(response_info) {
                         Ok(ri) => {
                             props.push(mqtt_ep::packet::Property::ResponseInformation(ri));
                             trace!("Adding Response Information to CONNACK: {response_info}");
                         }
                         Err(e) => {
-                            error!("Failed to create Response Information for '{response_info}': {e}");
+                            error!(
+                                "Failed to create Response Information for '{response_info}': {e}"
+                            );
                         }
                     }
                 }

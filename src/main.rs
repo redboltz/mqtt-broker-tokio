@@ -36,7 +36,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 use std::sync::Arc;
-use tokio_rustls::{TlsAcceptor, rustls};
+use tokio_rustls::{rustls, TlsAcceptor};
 use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tracing_setup::init_tracing;
@@ -421,7 +421,10 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
 
     // Load authentication/authorization configuration if auth file exists
     let broker = if Path::new(&args.auth_file).exists() {
-        info!("Loading authentication/authorization configuration from: {}", args.auth_file);
+        info!(
+            "Loading authentication/authorization configuration from: {}",
+            args.auth_file
+        );
         match Security::load_json(&args.auth_file) {
             Ok(security) => {
                 info!("Authentication/authorization configuration loaded successfully");
