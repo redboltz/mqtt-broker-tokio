@@ -145,17 +145,11 @@ fn test_json_load() {
     assert_eq!(security.login_anonymous(), Some("anonymous"));
 
     // Check SHA256 authentication
-    assert_eq!(
-        security.login("u1", "mypassword"),
-        Some("u1".to_string())
-    );
+    assert_eq!(security.login("u1", "mypassword"), Some("u1".to_string()));
     assert_eq!(security.login("u1", "invalidpassword"), None);
 
     // Check plain password authentication
-    assert_eq!(
-        security.login("u3", "mypassword"),
-        Some("u3".to_string())
-    );
+    assert_eq!(security.login("u3", "mypassword"), Some("u3".to_string()));
     assert_eq!(security.login("u3", "invalidpassword"), None);
 
     // Check client cert authentication
@@ -270,8 +264,14 @@ fn test_check_publish() {
     let security = Security::load_json(temp_file).unwrap();
 
     assert_eq!(security.auth_pub("topic", "u1"), AuthorizationType::Deny);
-    assert_eq!(security.auth_pub("sub/topic", "u1"), AuthorizationType::Allow);
-    assert_eq!(security.auth_pub("sub/topic1", "u1"), AuthorizationType::Deny);
+    assert_eq!(
+        security.auth_pub("sub/topic", "u1"),
+        AuthorizationType::Allow
+    );
+    assert_eq!(
+        security.auth_pub("sub/topic1", "u1"),
+        AuthorizationType::Deny
+    );
 
     assert_eq!(security.auth_sub("topic", "u1"), AuthorizationType::Deny);
     assert_eq!(
@@ -335,8 +335,14 @@ fn test_check_publish_any() {
     let security = Security::load_json(temp_file).unwrap();
 
     assert_eq!(security.auth_pub("topic", "u1"), AuthorizationType::Deny);
-    assert_eq!(security.auth_pub("sub/topic", "u1"), AuthorizationType::Allow);
-    assert_eq!(security.auth_pub("sub/topic1", "u1"), AuthorizationType::Deny);
+    assert_eq!(
+        security.auth_pub("sub/topic", "u1"),
+        AuthorizationType::Allow
+    );
+    assert_eq!(
+        security.auth_pub("sub/topic1", "u1"),
+        AuthorizationType::Deny
+    );
 
     assert_eq!(security.auth_sub("topic", "u1"), AuthorizationType::Deny);
     assert_eq!(
@@ -627,7 +633,9 @@ fn test_auth_check() {
 
     assert!(!security.get_auth_sub_topics("u1", "sub/test").is_empty());
     assert!(security.get_auth_sub_topics("u1", "sub/topic1").is_empty());
-    assert!(security.get_auth_sub_topics("u1", "example/topic1").is_empty());
+    assert!(security
+        .get_auth_sub_topics("u1", "example/topic1")
+        .is_empty());
 
     std::fs::remove_file(temp_file).ok();
 }
@@ -706,18 +714,9 @@ fn test_subscription_level_check() {
     std::fs::write(temp_file, json_content).unwrap();
     let security = Security::load_json(temp_file).unwrap();
 
-    assert_eq!(
-        security.auth_sub("1/2", "u1"),
-        AuthorizationType::Allow
-    );
-    assert_eq!(
-        security.auth_sub("1/2/3", "u1"),
-        AuthorizationType::Deny
-    );
-    assert_eq!(
-        security.auth_sub("1/2/", "u1"),
-        AuthorizationType::Deny
-    );
+    assert_eq!(security.auth_sub("1/2", "u1"), AuthorizationType::Allow);
+    assert_eq!(security.auth_sub("1/2/3", "u1"), AuthorizationType::Deny);
+    assert_eq!(security.auth_sub("1/2/", "u1"), AuthorizationType::Deny);
 
     assert!(security.is_subscribe_authorized("u1", "1/2"));
     assert!(!security.is_subscribe_authorized("u1", "1/2/3"));
@@ -762,10 +761,7 @@ fn test_allow_partial_deny_group() {
     assert!(!security.is_subscribe_authorized("u2", "topic"));
 
     // pub
-    assert_eq!(
-        security.auth_pub("topic", "u1"),
-        AuthorizationType::Allow
-    );
+    assert_eq!(security.auth_pub("topic", "u1"), AuthorizationType::Allow);
     assert_eq!(security.auth_pub("topic", "u2"), AuthorizationType::Deny);
 
     // deliver

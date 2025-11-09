@@ -345,9 +345,7 @@ impl Security {
         let mut inside_single_quote = false;
         let mut inside_double_quote = false;
 
-        let content = reader
-            .bytes()
-            .collect::<std::io::Result<Vec<u8>>>()?;
+        let content = reader.bytes().collect::<std::io::Result<Vec<u8>>>()?;
         let mut chars = content.iter().peekable();
 
         while let Some(&byte) = chars.next() {
@@ -441,9 +439,7 @@ impl Security {
             }
             for member in &group.members {
                 if Self::is_valid_user_name(member) && !self.authentication.contains_key(member) {
-                    return Err(anyhow!(
-                        "Invalid username in group {group_name}: {member}"
-                    ));
+                    return Err(anyhow!("Invalid username in group {group_name}: {member}"));
                 }
             }
         }
