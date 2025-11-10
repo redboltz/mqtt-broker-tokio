@@ -113,7 +113,7 @@ struct Args {
     #[arg(long)]
     ep_recv_buf_size: Option<usize>,
 
-    /// Enable SO_REUSEPORT for load balancing across threads (Linux only)
+    /// Enable SO_REUSEPORT for load balancing across threads (Linux/macOS/BSD)
     #[arg(long)]
     socket_reuseport: Option<bool>,
 
@@ -254,27 +254,12 @@ fn configure_individual_socket_options(
     // Configure keepalive if specified
     if let Some(keepalive_time) = keepalive_time {
         if keepalive_time > 0 {
-            if let Err(e) = sock_ref.set_keepalive(true) {
-                error!("Failed to enable keepalive for {addr}: {e}");
-            }
+            // Enable keepalive and set keepalive time using socket2's cross-platform API
+            let keepalive = socket2::TcpKeepalive::new()
+                .with_time(std::time::Duration::from_secs(keepalive_time as u64));
 
-            #[cfg(target_os = "linux")]
-            {
-                use std::os::unix::io::AsRawFd;
-                let fd = stream.as_raw_fd();
-                unsafe {
-                    let optval = keepalive_time as libc::c_int;
-                    if libc::setsockopt(
-                        fd,
-                        libc::IPPROTO_TCP,
-                        libc::TCP_KEEPIDLE,
-                        &optval as *const _ as *const libc::c_void,
-                        std::mem::size_of::<libc::c_int>() as libc::socklen_t,
-                    ) != 0
-                    {
-                        error!("Failed to set TCP_KEEPIDLE for {addr}");
-                    }
-                }
+            if let Err(e) = sock_ref.set_tcp_keepalive(&keepalive) {
+                error!("Failed to set TCP keepalive for {addr}: {e}");
             }
         }
     }
@@ -296,23 +281,11 @@ fn create_tcp_listener(
     socket.set_reuse_address(true)?;
 
     // Set SO_REUSEPORT if requested (before bind)
-    #[cfg(target_os = "linux")]
+    // Note: SO_REUSEPORT is supported on Linux (3.9+), macOS, and BSD,
+    // but not on Windows. socket2 handles platform differences automatically.
+    #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
     if reuseport {
-        use std::os::unix::io::AsRawFd;
-        let fd = socket.as_raw_fd();
-        unsafe {
-            let optval: libc::c_int = 1;
-            if libc::setsockopt(
-                fd,
-                libc::SOL_SOCKET,
-                libc::SO_REUSEPORT,
-                &optval as *const _ as *const libc::c_void,
-                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
-            ) != 0
-            {
-                return Err(anyhow::anyhow!("Failed to set SO_REUSEPORT"));
-            }
-        }
+        socket.set_reuse_port(true)?;
     }
 
     // Bind and listen
