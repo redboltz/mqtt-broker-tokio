@@ -747,9 +747,46 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
 
     info!("All listeners started. Broker is ready to accept connections.");
 
-    // Wait for any task to complete (they shouldn't under normal circumstances)
-    let (result, _index, _remaining) = future::select_all(tasks).await;
-    result?;
+    // Set up signal handlers for graceful shutdown
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = signal(SignalKind::terminate())?;
 
+        // Wait for either a signal or any task to complete (Unix version)
+        tokio::select! {
+            // Handle CTRL+C (SIGINT)
+            _ = tokio::signal::ctrl_c() => {
+                info!("Received SIGINT (Ctrl+C), shutting down gracefully...");
+            }
+            // Handle SIGTERM
+            _ = sigterm.recv() => {
+                info!("Received SIGTERM, shutting down gracefully...");
+            }
+            // Wait for any task to complete (they shouldn't under normal circumstances)
+            result = future::select_all(tasks) => {
+                let (task_result, _index, _remaining) = result;
+                task_result?;
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        // Wait for either CTRL+C or any task to complete (Windows version)
+        tokio::select! {
+            // Handle CTRL+C
+            _ = tokio::signal::ctrl_c() => {
+                info!("Received Ctrl+C, shutting down gracefully...");
+            }
+            // Wait for any task to complete (they shouldn't under normal circumstances)
+            result = future::select_all(tasks) => {
+                let (task_result, _index, _remaining) = result;
+                task_result?;
+            }
+        }
+    }
+
+    info!("Broker shutdown complete.");
     Ok(())
 }

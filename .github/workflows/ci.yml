@@ -90,7 +90,26 @@ jobs:
       run: cargo install cargo-llvm-cov
 
     - name: Generate code coverage
-      run: cargo llvm-cov --verbose --all-features --workspace --lcov --output-path lcov.info -- --test-threads=1
+      run: |
+        # Clean previous coverage data and build artifacts
+        cargo llvm-cov clean --workspace
+        cargo clean
+        # Set up coverage environment variables and build broker binary with instrumentation
+        echo "=== Setting up coverage environment and building mqtt-broker ==="
+        source <(cargo llvm-cov show-env --export-prefix)
+        cargo build --bin mqtt-broker --verbose
+        # Verify the binary exists and has coverage symbols
+        ls -lh target/debug/mqtt-broker* || echo "mqtt-broker binary not found"
+        echo "=== Checking for coverage symbols in mqtt-broker ==="
+        nm target/debug/mqtt-broker | grep -i "llvm_profile" | head -5 || echo "No coverage symbols found"
+        # Now run tests with coverage - this will use the already-instrumented broker binary
+        echo "=== Running tests with coverage ==="
+        cargo llvm-cov test --all-features --workspace --lcov --output-path lcov.info -- --test-threads=1 --nocapture
+        # Debug: List generated profile files
+        echo "=== Searching for .profraw files ==="
+        find . -name "*.profraw" -type f | head -20
+        echo "=== Searching for port-specific .profraw files ==="
+        find . -name "*.profraw" -type f | grep -i "port" | head -20 || echo "No port-specific .profraw files found"
 
     - name: Upload to codecov.io
       uses: codecov/codecov-action@v4
