@@ -113,7 +113,7 @@ struct Args {
     #[arg(long)]
     ep_recv_buf_size: Option<usize>,
 
-    /// Enable SO_REUSEPORT for load balancing across threads (Linux only)
+    /// Enable SO_REUSEPORT for load balancing across threads (Linux/macOS/BSD)
     #[arg(long)]
     socket_reuseport: Option<bool>,
 
@@ -254,27 +254,12 @@ fn configure_individual_socket_options(
     // Configure keepalive if specified
     if let Some(keepalive_time) = keepalive_time {
         if keepalive_time > 0 {
-            if let Err(e) = sock_ref.set_keepalive(true) {
-                error!("Failed to enable keepalive for {addr}: {e}");
-            }
+            // Enable keepalive and set keepalive time using socket2's cross-platform API
+            let keepalive = socket2::TcpKeepalive::new()
+                .with_time(std::time::Duration::from_secs(keepalive_time as u64));
 
-            #[cfg(target_os = "linux")]
-            {
-                use std::os::unix::io::AsRawFd;
-                let fd = stream.as_raw_fd();
-                unsafe {
-                    let optval = keepalive_time as libc::c_int;
-                    if libc::setsockopt(
-                        fd,
-                        libc::IPPROTO_TCP,
-                        libc::TCP_KEEPIDLE,
-                        &optval as *const _ as *const libc::c_void,
-                        std::mem::size_of::<libc::c_int>() as libc::socklen_t,
-                    ) != 0
-                    {
-                        error!("Failed to set TCP_KEEPIDLE for {addr}");
-                    }
-                }
+            if let Err(e) = sock_ref.set_tcp_keepalive(&keepalive) {
+                error!("Failed to set TCP keepalive for {addr}: {e}");
             }
         }
     }
@@ -283,7 +268,7 @@ fn configure_individual_socket_options(
 /// Create and configure TCP listener with SO_REUSEADDR (and optionally SO_REUSEPORT)
 fn create_tcp_listener(
     bind_addr: std::net::SocketAddr,
-    reuseport: bool,
+    #[allow(unused_variables)] reuseport: bool,
 ) -> anyhow::Result<tokio::net::TcpListener> {
     // Create socket
     let socket = socket2::Socket::new(
@@ -296,23 +281,11 @@ fn create_tcp_listener(
     socket.set_reuse_address(true)?;
 
     // Set SO_REUSEPORT if requested (before bind)
-    #[cfg(target_os = "linux")]
+    // Note: SO_REUSEPORT is supported on Linux (3.9+), macOS, and BSD,
+    // but not on Windows. socket2 handles platform differences automatically.
+    #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
     if reuseport {
-        use std::os::unix::io::AsRawFd;
-        let fd = socket.as_raw_fd();
-        unsafe {
-            let optval: libc::c_int = 1;
-            if libc::setsockopt(
-                fd,
-                libc::SOL_SOCKET,
-                libc::SO_REUSEPORT,
-                &optval as *const _ as *const libc::c_void,
-                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
-            ) != 0
-            {
-                return Err(anyhow::anyhow!("Failed to set SO_REUSEPORT"));
-            }
-        }
+        socket.set_reuse_port(true)?;
     }
 
     // Bind and listen
@@ -774,9 +747,46 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
 
     info!("All listeners started. Broker is ready to accept connections.");
 
-    // Wait for any task to complete (they shouldn't under normal circumstances)
-    let (result, _index, _remaining) = future::select_all(tasks).await;
-    result?;
+    // Set up signal handlers for graceful shutdown
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = signal(SignalKind::terminate())?;
 
+        // Wait for either a signal or any task to complete (Unix version)
+        tokio::select! {
+            // Handle CTRL+C (SIGINT)
+            _ = tokio::signal::ctrl_c() => {
+                info!("Received SIGINT (Ctrl+C), shutting down gracefully...");
+            }
+            // Handle SIGTERM
+            _ = sigterm.recv() => {
+                info!("Received SIGTERM, shutting down gracefully...");
+            }
+            // Wait for any task to complete (they shouldn't under normal circumstances)
+            result = future::select_all(tasks) => {
+                let (task_result, _index, _remaining) = result;
+                task_result?;
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        // Wait for either CTRL+C or any task to complete (Windows version)
+        tokio::select! {
+            // Handle CTRL+C
+            _ = tokio::signal::ctrl_c() => {
+                info!("Received Ctrl+C, shutting down gracefully...");
+            }
+            // Wait for any task to complete (they shouldn't under normal circumstances)
+            result = future::select_all(tasks) => {
+                let (task_result, _index, _remaining) = result;
+                task_result?;
+            }
+        }
+    }
+
+    info!("Broker shutdown complete.");
     Ok(())
 }

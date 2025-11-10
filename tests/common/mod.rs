@@ -37,12 +37,29 @@ pub struct BrokerProcess {
 
 impl BrokerProcess {
     pub fn start() -> Self {
-        // Check if broker binary exists, if not provide helpful error
+        // Ensure broker binary is built
         let broker_path = "target/debug/mqtt-broker";
         if !std::path::Path::new(broker_path).exists() {
-            panic!(
-                "Broker binary not found at {broker_path}. \
-                 Please run 'cargo build --bin mqtt-broker' first."
+            // Automatically build the broker binary
+            // Inherit environment variables (including RUSTFLAGS for coverage)
+            let output = Command::new("cargo")
+                .args(["build", "--bin", "mqtt-broker"])
+                .env_clear()
+                .envs(std::env::vars())
+                .output()
+                .expect("Failed to execute cargo build");
+
+            if !output.status.success() {
+                panic!(
+                    "Failed to build broker binary:\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+
+            #[cfg(test)]
+            eprintln!(
+                "Built mqtt-broker with RUSTFLAGS: {:?}",
+                std::env::var("RUSTFLAGS")
             );
         }
 
@@ -50,11 +67,33 @@ impl BrokerProcess {
         let port = PORT_COUNTER.fetch_add(1, Ordering::SeqCst);
 
         // Run the built binary directly
-        let child = Command::new(broker_path)
-            .args(["--tcp-port", &port.to_string()])
-            .env("RUST_LOG", "trace")
-            .spawn()
-            .expect("Failed to start broker");
+        let mut cmd = Command::new(broker_path);
+        cmd.args(["--tcp-port", &port.to_string()]);
+
+        // Set RUST_LOG
+        cmd.env("RUST_LOG", "trace");
+
+        // For coverage: make LLVM_PROFILE_FILE unique per subprocess
+        if let Ok(llvm_profile) = std::env::var("LLVM_PROFILE_FILE") {
+            // Make profile file unique per subprocess by inserting port number
+            // Original: /path/mqtt-broker-tokio-%p-%4m.profraw
+            // Modified: /path/mqtt-broker-tokio-port10000-%p-%4m.profraw
+            let profile_file = llvm_profile.replace(
+                "mqtt-broker-tokio-",
+                &format!("mqtt-broker-tokio-port{port}-"),
+            );
+
+            // Debug: print coverage info (only in test builds)
+            #[cfg(test)]
+            eprintln!("Coverage: broker on port {port}: {profile_file}");
+
+            cmd.env("LLVM_PROFILE_FILE", profile_file);
+        } else {
+            #[cfg(test)]
+            eprintln!("Warning: LLVM_PROFILE_FILE not set for broker on port {port}");
+        }
+
+        let child = cmd.spawn().expect("Failed to start broker");
 
         BrokerProcess { child, port }
     }
@@ -80,8 +119,45 @@ impl BrokerProcess {
 
 impl Drop for BrokerProcess {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        // For coverage: we need to allow the process to flush coverage data gracefully
+
+        #[cfg(unix)]
+        {
+            // On Unix, send SIGTERM first to allow graceful shutdown
+            use std::process::Command;
+            let pid = self.child.id();
+            let _ = Command::new("kill")
+                .args(["-TERM", &pid.to_string()])
+                .output();
+
+            // Wait up to 2 seconds for graceful shutdown
+            for _ in 0..20 {
+                match self.child.try_wait() {
+                    Ok(Some(_)) => {
+                        // Process exited gracefully
+                        return;
+                    }
+                    Ok(None) => {
+                        // Still running, wait a bit more
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                    Err(_) => break,
+                }
+            }
+
+            // If still running after 2 seconds, force kill
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+
+        #[cfg(not(unix))]
+        {
+            // On Windows, we don't have SIGTERM, so just wait a bit before killing
+            // to give coverage runtime a chance to flush
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
     }
 }
 

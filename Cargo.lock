@@ -1035,7 +1035,6 @@ dependencies = [
  "futures-util",
  "hex",
  "json5",
- "libc",
  "mqtt-endpoint-tokio",
  "num_cpus",
  "prefix_tree_map",

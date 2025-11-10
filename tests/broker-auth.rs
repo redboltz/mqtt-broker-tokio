@@ -136,10 +136,10 @@ fn test_json_load() {
     }"##;
 
     // Write JSON to temp file
-    let temp_file = "/tmp/test_auth.json";
-    std::fs::write(temp_file, json_content).unwrap();
+    let temp_file = std::env::temp_dir().join("test_auth.json");
+    std::fs::write(&temp_file, json_content).unwrap();
 
-    let security = Security::load_json(temp_file).unwrap();
+    let security = Security::load_json(temp_file.to_str().unwrap()).unwrap();
 
     // Check anonymous user
     assert_eq!(security.login_anonymous(), Some("anonymous"));
@@ -156,7 +156,7 @@ fn test_json_load() {
     assert!(security.login_cert("u2"));
     assert!(!security.login_cert("u1"));
 
-    std::fs::remove_file(temp_file).ok();
+    std::fs::remove_file(&temp_file).ok();
 }
 
 #[test]
@@ -177,10 +177,10 @@ fn test_check_errors() {
             }
         ]
     }"##;
-    let temp_file = "/tmp/test_auth_invalid.json";
-    std::fs::write(temp_file, json_invalid).unwrap();
-    assert!(Security::load_json(temp_file).is_err());
-    std::fs::remove_file(temp_file).ok();
+    let temp_file = std::env::temp_dir().join("test_auth_invalid.json");
+    std::fs::write(&temp_file, json_invalid).unwrap();
+    assert!(Security::load_json(temp_file.to_str().unwrap()).is_err());
+    std::fs::remove_file(&temp_file).ok();
 
     // Invalid username
     let json_invalid = r##"{
@@ -191,9 +191,9 @@ fn test_check_errors() {
             }
         ]
     }"##;
-    std::fs::write(temp_file, json_invalid).unwrap();
-    assert!(Security::load_json(temp_file).is_err());
-    std::fs::remove_file(temp_file).ok();
+    std::fs::write(&temp_file, json_invalid).unwrap();
+    assert!(Security::load_json(temp_file.to_str().unwrap()).is_err());
+    std::fs::remove_file(&temp_file).ok();
 
     // Invalid group name
     let json_invalid = r##"{
@@ -204,9 +204,9 @@ fn test_check_errors() {
             }
         ]
     }"##;
-    std::fs::write(temp_file, json_invalid).unwrap();
-    assert!(Security::load_json(temp_file).is_err());
-    std::fs::remove_file(temp_file).ok();
+    std::fs::write(&temp_file, json_invalid).unwrap();
+    assert!(Security::load_json(temp_file.to_str().unwrap()).is_err());
+    std::fs::remove_file(&temp_file).ok();
 }
 
 #[test]
@@ -259,9 +259,9 @@ fn test_check_publish() {
         ]
     }"##;
 
-    let temp_file = "/tmp/test_auth_publish.json";
-    std::fs::write(temp_file, json_content).unwrap();
-    let security = Security::load_json(temp_file).unwrap();
+    let temp_file = std::env::temp_dir().join("test_auth_publish.json");
+    std::fs::write(&temp_file, json_content).unwrap();
+    let security = Security::load_json(temp_file.to_str().unwrap()).unwrap();
 
     assert_eq!(security.auth_pub("topic", "u1"), AuthorizationType::Deny);
     assert_eq!(
@@ -283,7 +283,7 @@ fn test_check_publish() {
         AuthorizationType::Deny
     );
 
-    std::fs::remove_file(temp_file).ok();
+    std::fs::remove_file(&temp_file).ok();
 }
 
 #[test]
@@ -330,9 +330,9 @@ fn test_check_publish_any() {
         ]
     }"##;
 
-    let temp_file = "/tmp/test_auth_publish_any.json";
-    std::fs::write(temp_file, json_content).unwrap();
-    let security = Security::load_json(temp_file).unwrap();
+    let temp_file = std::env::temp_dir().join("test_auth_publish_any.json");
+    std::fs::write(&temp_file, json_content).unwrap();
+    let security = Security::load_json(temp_file.to_str().unwrap()).unwrap();
 
     assert_eq!(security.auth_pub("topic", "u1"), AuthorizationType::Deny);
     assert_eq!(
@@ -354,7 +354,7 @@ fn test_check_publish_any() {
         AuthorizationType::Deny
     );
 
-    std::fs::remove_file(temp_file).ok();
+    std::fs::remove_file(&temp_file).ok();
 }
 
 #[test]
@@ -627,9 +627,9 @@ fn test_auth_check() {
         ]
     }"##;
 
-    let temp_file = "/tmp/test_auth_check.json";
-    std::fs::write(temp_file, json_content).unwrap();
-    let security = Security::load_json(temp_file).unwrap();
+    let temp_file = std::env::temp_dir().join("test_auth_check.json");
+    std::fs::write(&temp_file, json_content).unwrap();
+    let security = Security::load_json(temp_file.to_str().unwrap()).unwrap();
 
     assert!(!security.get_auth_sub_topics("u1", "sub/test").is_empty());
     assert!(security.get_auth_sub_topics("u1", "sub/topic1").is_empty());
@@ -637,7 +637,7 @@ fn test_auth_check() {
         .get_auth_sub_topics("u1", "example/topic1")
         .is_empty());
 
-    std::fs::remove_file(temp_file).ok();
+    std::fs::remove_file(&temp_file).ok();
 }
 
 #[test]
@@ -666,9 +666,9 @@ fn test_priority() {
         ]
     }"##;
 
-    let temp_file = "/tmp/test_auth_priority.json";
-    std::fs::write(temp_file, json_content).unwrap();
-    let security = Security::load_json(temp_file).unwrap();
+    let temp_file = std::env::temp_dir().join("test_auth_priority.json");
+    std::fs::write(&temp_file, json_content).unwrap();
+    let security = Security::load_json(temp_file.to_str().unwrap()).unwrap();
 
     // Later rules have higher priority, so "#" deny overrides "t1" allow
     assert_eq!(security.auth_sub("t1", "u1"), AuthorizationType::Deny);
@@ -681,7 +681,7 @@ fn test_priority() {
     assert_eq!(security.auth_pub("t2", "u1"), AuthorizationType::Allow);
     assert_eq!(security.auth_pub("t3", "u1"), AuthorizationType::Deny);
 
-    std::fs::remove_file(temp_file).ok();
+    std::fs::remove_file(&temp_file).ok();
 }
 
 #[test]
@@ -710,9 +710,9 @@ fn test_subscription_level_check() {
         ]
     }"##;
 
-    let temp_file = "/tmp/test_auth_sublevel.json";
-    std::fs::write(temp_file, json_content).unwrap();
-    let security = Security::load_json(temp_file).unwrap();
+    let temp_file = std::env::temp_dir().join("test_auth_sublevel.json");
+    std::fs::write(&temp_file, json_content).unwrap();
+    let security = Security::load_json(temp_file.to_str().unwrap()).unwrap();
 
     assert_eq!(security.auth_sub("1/2", "u1"), AuthorizationType::Allow);
     assert_eq!(security.auth_sub("1/2/3", "u1"), AuthorizationType::Deny);
@@ -722,7 +722,7 @@ fn test_subscription_level_check() {
     assert!(!security.is_subscribe_authorized("u1", "1/2/3"));
     assert!(!security.is_subscribe_authorized("u1", "1/2/"));
 
-    std::fs::remove_file(temp_file).ok();
+    std::fs::remove_file(&temp_file).ok();
 }
 
 #[test]
@@ -752,9 +752,9 @@ fn test_allow_partial_deny_group() {
         ]
     }"##;
 
-    let temp_file = "/tmp/test_auth_partial.json";
-    std::fs::write(temp_file, json_content).unwrap();
-    let security = Security::load_json(temp_file).unwrap();
+    let temp_file = std::env::temp_dir().join("test_auth_partial.json");
+    std::fs::write(&temp_file, json_content).unwrap();
+    let security = Security::load_json(temp_file.to_str().unwrap()).unwrap();
 
     // sub
     assert!(security.is_subscribe_authorized("u1", "topic"));
@@ -768,5 +768,5 @@ fn test_allow_partial_deny_group() {
     assert_eq!(security.auth_sub("topic", "u1"), AuthorizationType::Allow);
     assert_eq!(security.auth_sub("topic", "u2"), AuthorizationType::Deny);
 
-    std::fs::remove_file(temp_file).ok();
+    std::fs::remove_file(&temp_file).ok();
 }

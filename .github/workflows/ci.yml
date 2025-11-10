@@ -1,0 +1,119 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        rust: [stable]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: ${{ matrix.rust }}
+        components: rustfmt, clippy
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Cache cargo index
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/git
+        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Cache cargo build
+      uses: actions/cache@v4
+      with:
+        path: target
+        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Check formatting
+      run: cargo fmt --all -- --check
+
+    - name: Run clippy
+      run: cargo clippy --all-targets --all-features -- -D warnings -A clippy::new_without_default -A clippy::collapsible_if -A clippy::empty_line_after_doc_comments -A clippy::doc_overindented_list_items -A clippy::unnecessary_to_owned -A clippy::needless_borrow -A clippy::vec_init_then_push -A clippy::unnecessary_map_or -A clippy::unwrap_or_default -A clippy::len_zero -A clippy::unusual_byte_groupings -A unused_imports -A dead_code -A clippy::assertions_on_constants -A clippy::needless_borrows_for_generic_args -A clippy::bool_assert_comparison -A clippy::too_many_arguments
+
+    - name: Build
+      run: cargo build --verbose
+
+    - name: Run tests
+      run: cargo test --verbose -- --nocapture --test-threads=1
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: llvm-tools-preview
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Cache cargo index
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/git
+        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Cache cargo build
+      uses: actions/cache@v4
+      with:
+        path: target
+        key: ${{ runner.os }}-cargo-build-target-coverage-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Install cargo-llvm-cov
+      run: cargo install cargo-llvm-cov
+
+    - name: Generate code coverage
+      run: |
+        # Clean previous coverage data and build artifacts
+        cargo llvm-cov clean --workspace
+        cargo clean
+        # Set up coverage environment variables and build broker binary with instrumentation
+        echo "=== Setting up coverage environment and building mqtt-broker ==="
+        source <(cargo llvm-cov show-env --export-prefix)
+        cargo build --bin mqtt-broker --verbose
+        # Verify the binary exists and has coverage symbols
+        ls -lh target/debug/mqtt-broker* || echo "mqtt-broker binary not found"
+        echo "=== Checking for coverage symbols in mqtt-broker ==="
+        nm target/debug/mqtt-broker | grep -i "llvm_profile" | head -5 || echo "No coverage symbols found"
+        # Now run tests with coverage - this will use the already-instrumented broker binary
+        echo "=== Running tests with coverage ==="
+        cargo llvm-cov test --all-features --workspace --lcov --output-path lcov.info -- --test-threads=1 --nocapture
+        # Debug: List generated profile files
+        echo "=== Searching for .profraw files ==="
+        find . -name "*.profraw" -type f | head -20
+        echo "=== Searching for port-specific .profraw files ==="
+        find . -name "*.profraw" -type f | grep -i "port" | head -20 || echo "No port-specific .profraw files found"
+
+    - name: Upload to codecov.io
+      uses: codecov/codecov-action@v4
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        file: ./lcov.info
+        fail_ci_if_error: true
