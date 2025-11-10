@@ -1,5 +1,9 @@
 # mqtt-broker-tokio
 
+[![CI](https://github.com/redboltz/mqtt-broker-tokio/workflows/CI/badge.svg)](https://github.com/redboltz/mqtt-broker-tokio/actions)
+[![codecov](https://codecov.io/gh/redboltz/mqtt-broker-tokio/branch/main/graph/badge.svg)](https://codecov.io/gh/redboltz/mqtt-broker-tokio)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 Impotant notice: This software is under construction. Full functionalities below are NOT implemented yet.
 
 A high-performance async MQTT broker implementation built with tokio and [mqtt-endpoint-tokio](https://github.com/redboltz/mqtt-endpoint-tokio).
