@@ -37,13 +37,21 @@ pub struct BrokerProcess {
 
 impl BrokerProcess {
     pub fn start() -> Self {
-        // Check if broker binary exists, if not provide helpful error
+        // Ensure broker binary is built
         let broker_path = "target/debug/mqtt-broker";
         if !std::path::Path::new(broker_path).exists() {
-            panic!(
-                "Broker binary not found at {broker_path}. \
-                 Please run 'cargo build --bin mqtt-broker' first."
-            );
+            // Automatically build the broker binary
+            let output = Command::new("cargo")
+                .args(["build", "--bin", "mqtt-broker"])
+                .output()
+                .expect("Failed to execute cargo build");
+
+            if !output.status.success() {
+                panic!(
+                    "Failed to build broker binary:\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
         }
 
         // Allocate unique port for this broker instance

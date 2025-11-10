@@ -268,7 +268,7 @@ fn configure_individual_socket_options(
 /// Create and configure TCP listener with SO_REUSEADDR (and optionally SO_REUSEPORT)
 fn create_tcp_listener(
     bind_addr: std::net::SocketAddr,
-    reuseport: bool,
+    #[allow(unused_variables)] reuseport: bool,
 ) -> anyhow::Result<tokio::net::TcpListener> {
     // Create socket
     let socket = socket2::Socket::new(
