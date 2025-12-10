@@ -62,6 +62,17 @@ pub struct OfflineMessage {
     pub props: Vec<mqtt_ep::packet::Property>,
 }
 
+/// Will message (Last Will and Testament)
+#[derive(Debug, Clone)]
+pub struct WillMessage {
+    pub topic: String,
+    pub payload: mqtt_ep::common::ArcPayload,
+    pub qos: mqtt_ep::packet::Qos,
+    pub retain: bool,
+    pub props: Vec<mqtt_ep::packet::Property>,
+    pub will_delay_interval: u32, // Will Delay Interval in seconds (MQTT v5.0)
+}
+
 /// Session state
 pub struct Session {
     /// Session identifier
@@ -88,6 +99,12 @@ pub struct Session {
     /// Response Topic for Request/Response pattern (MQTT v5.0)
     /// Generated when Request Response Information is 1 in CONNECT
     response_topic: Option<String>,
+
+    /// Will message (Last Will and Testament)
+    will_message: Option<WillMessage>,
+
+    /// Will Delay Interval timer handle (MQTT v5.0)
+    will_delay_timer: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Session {
@@ -107,6 +124,8 @@ impl Session {
             expiry_timer: None,
             need_keep,
             response_topic: None,
+            will_message: None,
+            will_delay_timer: None,
         }
     }
 
@@ -118,6 +137,22 @@ impl Session {
     /// Set response topic
     pub fn set_response_topic(&mut self, topic: Option<String>) {
         self.response_topic = topic;
+    }
+
+    /// Get will message
+    pub fn will_message(&self) -> Option<&WillMessage> {
+        self.will_message.as_ref()
+    }
+
+    /// Set will message
+    pub fn set_will_message(&mut self, will: Option<WillMessage>) {
+        self.will_message = will;
+    }
+
+    #[allow(dead_code)]
+    /// Take will message (removes and returns it)
+    pub fn take_will_message(&mut self) -> Option<WillMessage> {
+        self.will_message.take()
     }
 
     /// Get session expiry interval
@@ -145,6 +180,7 @@ impl Session {
         self.endpoint.as_ref()
     }
 
+    #[allow(dead_code)]
     /// Check if session is online
     pub fn is_online(&self) -> bool {
         self.online
@@ -157,6 +193,11 @@ impl Session {
 
         // Cancel expiry timer when coming online
         if let Some(timer) = self.expiry_timer.take() {
+            timer.abort();
+        }
+
+        // Cancel will delay timer when coming online
+        if let Some(timer) = self.will_delay_timer.take() {
             timer.abort();
         }
     }
@@ -190,6 +231,7 @@ impl Session {
         std::mem::take(&mut self.offline_messages)
     }
 
+    #[allow(dead_code)]
     /// Get offline message count
     pub fn offline_message_count(&self) -> usize {
         self.offline_messages.len()
@@ -207,6 +249,22 @@ impl Session {
     /// Clear session expiry timer
     pub fn clear_expiry_timer(&mut self) {
         if let Some(timer) = self.expiry_timer.take() {
+            timer.abort();
+        }
+    }
+
+    /// Set will delay timer
+    pub fn set_will_delay_timer(&mut self, timer: tokio::task::JoinHandle<()>) {
+        // Cancel existing timer if any
+        if let Some(old_timer) = self.will_delay_timer.take() {
+            old_timer.abort();
+        }
+        self.will_delay_timer = Some(timer);
+    }
+
+    /// Clear will delay timer
+    pub fn clear_will_delay_timer(&mut self) {
+        if let Some(timer) = self.will_delay_timer.take() {
             timer.abort();
         }
     }
@@ -314,6 +372,8 @@ impl Drop for Session {
     fn drop(&mut self) {
         // Clean up expiry timer on drop
         self.clear_expiry_timer();
+        // Clean up will delay timer on drop
+        self.clear_will_delay_timer();
     }
 }
 
@@ -422,7 +482,7 @@ impl SessionStore {
 
         removed
     }
-
+    #[allow(dead_code)]
     /// Get all session IDs
     pub async fn get_all_session_ids(&self) -> Vec<SessionId> {
         let sessions = self.sessions.read().await;

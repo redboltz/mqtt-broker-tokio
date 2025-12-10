@@ -74,6 +74,7 @@ pub fn init_tracing(log_level: tracing::Level) -> Result<WorkerGuard> {
     Ok(guard)
 }
 
+#[allow(dead_code)]
 /// Alternative initialization with file appender for production use
 pub fn init_tracing_with_file(
     log_level: tracing::Level,

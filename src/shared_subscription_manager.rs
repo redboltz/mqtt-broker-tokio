@@ -186,6 +186,7 @@ impl SharedSubscriptionManager {
     /// * `topic_filter` - The topic filter to match
     ///
     /// # Returns
+    #[allow(dead_code)]
     /// `Some((session_ref, details))` if a matching client is found, `None` otherwise
     pub fn get_target(
         &mut self,

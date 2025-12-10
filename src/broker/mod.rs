@@ -29,7 +29,7 @@ use uuid::Uuid;
 
 use crate::auth_impl::Security;
 use crate::retained_store::RetainedStore;
-use crate::session_store::{SessionId, SessionRef, SessionStore};
+use crate::session_store::{SessionId, SessionRef, SessionStore, WillMessage};
 use crate::subscription_store::{EndpointRef, SubscriptionStore};
 
 use mqtt_ep::prelude::*;
@@ -317,6 +317,7 @@ impl BrokerManager {
             clean_start_or_session,
             assigned_client_id,
             request_response_information,
+            will_message,
         ) = match endpoint.recv().await {
             Ok(packet) => {
                 trace!("🔍 Received first packet: {:?}", packet.packet_type());
@@ -350,6 +351,33 @@ impl BrokerManager {
                         let password = connect
                             .password()
                             .and_then(|p| String::from_utf8(p.to_vec()).ok());
+
+                        // Extract Will message if present
+                        let will_message = if connect.will_flag() {
+                            let will_topic = connect
+                                .will_topic()
+                                .map(|s| s.to_string())
+                                .unwrap_or_default();
+                            let will_payload = connect.will_payload().unwrap_or_default();
+                            let will_qos = connect.will_qos();
+                            let will_retain = connect.will_retain();
+
+                            trace!(
+                                "MQTT v3.1.1 client {extracted_id} has Will message: topic={will_topic}, qos={will_qos:?}, retain={will_retain}"
+                            );
+
+                            Some(WillMessage {
+                                topic: will_topic,
+                                payload: will_payload.into_payload(),
+                                qos: will_qos,
+                                retain: will_retain,
+                                props: Vec::new(), // v3.1.1 doesn't support properties
+                                will_delay_interval: 0, // v3.1.1 doesn't support Will Delay Interval
+                            })
+                        } else {
+                            None
+                        };
+
                         trace!(
                             "MQTT v3.1.1 client {extracted_id} connected, clean_session={clean_session}"
                         );
@@ -368,6 +396,7 @@ impl BrokerManager {
                             clean_session,
                             None, // assigned_client_id
                             None, // request_response_information (v3.1.1 doesn't support this)
+                            will_message,
                         )
                     }
                     mqtt_ep::packet::Packet::V5_0Connect(connect) => {
@@ -419,6 +448,45 @@ impl BrokerManager {
 
                         let need_keep = session_expiry_interval > 0;
 
+                        // Extract Will message if present
+                        let will_message = if connect.will_flag() {
+                            let will_topic = connect
+                                .will_topic()
+                                .map(|s| s.to_string())
+                                .unwrap_or_default();
+                            let will_payload = connect.will_payload().unwrap_or_default();
+                            let will_qos = connect.will_qos();
+                            let will_retain = connect.will_retain();
+                            let will_props = connect.will_props().to_vec();
+
+                            // Extract Will Delay Interval from Will properties
+                            let will_delay_interval = will_props
+                                .iter()
+                                .find_map(|prop| {
+                                    if let mqtt_ep::packet::Property::WillDelayInterval(_) = prop {
+                                        prop.as_u32()
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .unwrap_or(0);
+
+                            trace!(
+                                "MQTT v5.0 client {extracted_id} has Will message: topic={will_topic}, qos={will_qos:?}, retain={will_retain}, will_delay_interval={will_delay_interval}"
+                            );
+
+                            Some(WillMessage {
+                                topic: will_topic,
+                                payload: will_payload.into_payload(),
+                                qos: will_qos,
+                                retain: will_retain,
+                                props: will_props,
+                                will_delay_interval,
+                            })
+                        } else {
+                            None
+                        };
+
                         trace!(
                             "MQTT v5.0 client {extracted_id} connected, clean_start={clean_start}, session_expiry_interval={session_expiry_interval}, request_response_information={request_response_information}"
                         );
@@ -432,6 +500,7 @@ impl BrokerManager {
                             clean_start,
                             assigned_client_id,
                             Some(request_response_information),
+                            will_message,
                         )
                     }
                     _ => {
@@ -513,7 +582,38 @@ impl BrokerManager {
 
         let session_present = if clean_start_or_session {
             // Clean session/start: remove existing session if any
-            if existing_session.is_some() {
+            if let Some(ref existing_sess) = existing_session {
+                // Check if there's a Will message that needs to be sent before deletion
+                let session_guard = existing_sess.read().await;
+                if let Some(will) = session_guard.will_message() {
+                    let will_clone = will.clone();
+                    drop(session_guard);
+
+                    debug!(
+                        "Sending Will message before session deletion due to CleanStart:1 for {client_id}"
+                    );
+
+                    // Create SessionRef for the existing session
+                    let existing_session_ref = SessionRef::new(session_id.clone());
+
+                    // Publish Will message
+                    Self::publish_will_message(
+                        &will_clone.topic,
+                        will_clone.qos,
+                        will_clone.retain,
+                        will_clone.payload.clone(),
+                        will_clone.props.clone(),
+                        &subscription_store,
+                        &retained_store,
+                        &session_store,
+                        &existing_session_ref,
+                        &security,
+                    )
+                    .await;
+                } else {
+                    drop(session_guard);
+                }
+
                 session_store.remove_session(&session_id).await;
             }
             false
@@ -615,13 +715,14 @@ impl BrokerManager {
             // Send offline messages
             Self::send_offline_messages(&endpoint_arc, &client_id, offline_messages).await;
 
-            // Get session and update Response Topic
+            // Get session and update Response Topic and Will message
             match session_store.get_session(&session_id).await {
                 Some(s) => {
-                    // Update Response Topic in session
+                    // Update Response Topic and Will message in session
                     let mut session_guard = s.write().await;
                     let old_response_topic = session_guard.response_topic().map(|s| s.to_string());
                     session_guard.set_response_topic(response_topic.clone());
+                    session_guard.set_will_message(will_message.clone());
                     drop(session_guard);
 
                     // Unregister old Response Topic if it exists and is different
@@ -675,10 +776,11 @@ impl BrokerManager {
                 )
                 .await;
 
-            // Set Response Topic in new session
+            // Set Response Topic and Will message in new session
             let mut session_guard = session.write().await;
             let old_response_topic = session_guard.response_topic().map(|s| s.to_string());
             session_guard.set_response_topic(response_topic.clone());
+            session_guard.set_will_message(will_message.clone());
             drop(session_guard);
 
             // Unregister old Response Topic if it exists and is different
@@ -709,6 +811,11 @@ impl BrokerManager {
 
         trace!("Starting main endpoint loop for client {client_id}");
 
+        // Flag to determine if Will message should be sent
+        // false = send Will (abnormal disconnect)
+        // true = don't send Will (normal disconnect)
+        let mut normal_disconnect = false;
+
         // Main packet processing loop
         loop {
             // trace!("🔄 [{}] Waiting for packet...", client_id);
@@ -716,22 +823,45 @@ impl BrokerManager {
                 Ok(packet) => {
                     // trace!("📥 [{}] Received packet: {:?}", client_id, packet.packet_type());
 
-                    // Handle packet directly
-                    if let Err(e) = Self::handle_received_packet_in_endpoint(
-                        &client_id,
-                        &packet,
-                        &subscription_store,
-                        &retained_store,
-                        &session_store,
-                        &security,
-                        &subscription_tx,
-                        &endpoint_arc,
-                        &session_ref,
-                    )
-                    .await
-                    {
-                        error!("❌ Error handling packet from client {client_id}: {e}");
-                        break;
+                    // Check for DISCONNECT packet
+                    match &packet {
+                        mqtt_ep::packet::Packet::V3_1_1Disconnect(_) => {
+                            trace!("Received DISCONNECT from client {client_id} (v3.1.1)");
+                            normal_disconnect = true;
+                            break;
+                        }
+                        mqtt_ep::packet::Packet::V5_0Disconnect(disconnect) => {
+                            let reason_code = disconnect.reason_code();
+                            trace!(
+                                "Received DISCONNECT from client {client_id} (v5.0), reason_code={reason_code:?}"
+                            );
+
+                            // Check if Will should be sent based on Reason Code
+                            // 0x04 = DisconnectWithWillMessage: send Will
+                            // All others: don't send Will
+                            normal_disconnect = reason_code
+                                != Some(mqtt_ep::result_code::DisconnectReasonCode::DisconnectWithWillMessage);
+                            break;
+                        }
+                        _ => {
+                            // Handle other packets
+                            if let Err(e) = Self::handle_received_packet_in_endpoint(
+                                &client_id,
+                                &packet,
+                                &subscription_store,
+                                &retained_store,
+                                &session_store,
+                                &security,
+                                &subscription_tx,
+                                &endpoint_arc,
+                                &session_ref,
+                            )
+                            .await
+                            {
+                                error!("❌ Error handling packet from client {client_id}: {e}");
+                                break;
+                            }
+                        }
                     }
                 }
                 Err(e) => {
@@ -742,6 +872,111 @@ impl BrokerManager {
         }
 
         trace!("Endpoint task finished for client {client_id}");
+
+        // Check if session will be kept to determine Will Delay Interval behavior
+        let session_guard = session.read().await;
+        let need_keep = session_guard.need_keep();
+        drop(session_guard);
+
+        trace!("Disconnect for {client_id}: normal_disconnect={normal_disconnect}, need_keep={need_keep}");
+
+        // Publish Will message if needed (abnormal disconnect or DisconnectWithWillMessage)
+        if !normal_disconnect {
+            let session_guard = session.read().await;
+            if let Some(will) = session_guard.will_message() {
+                let will_delay_interval = will.will_delay_interval;
+                let will_clone = will.clone();
+                drop(session_guard);
+
+                trace!("Will message found: delay={will_delay_interval}s, need_keep={need_keep}");
+
+                // Check if we should send Will immediately or start a timer
+                if will_delay_interval == 0 || !need_keep {
+                    // Send Will immediately: either no delay specified or session won't be kept
+                    trace!(
+                        "Publishing Will message immediately for client {client_id}: topic={}, will_delay_interval={will_delay_interval}, need_keep={need_keep}",
+                        will_clone.topic
+                    );
+
+                    // Publish Will message to all subscribers
+                    Self::publish_will_message(
+                        &will_clone.topic,
+                        will_clone.qos,
+                        will_clone.retain,
+                        will_clone.payload.clone(),
+                        will_clone.props.clone(),
+                        &subscription_store,
+                        &retained_store,
+                        &session_store,
+                        &session_ref,
+                        &security,
+                    )
+                    .await;
+
+                    // Clear Will message after sending
+                    let mut session_guard = session.write().await;
+                    session_guard.set_will_message(None);
+                    drop(session_guard);
+                } else {
+                    // Start Will Delay Interval timer
+                    trace!(
+                        "Starting Will Delay Interval timer for {client_id}: {will_delay_interval} seconds"
+                    );
+
+                    let session_clone = session.clone();
+                    let subscription_store_clone = subscription_store.clone();
+                    let retained_store_clone = retained_store.clone();
+                    let session_store_clone = session_store.clone();
+                    let session_ref_clone = session_ref.clone();
+                    let security_clone = security.clone();
+                    let client_id_clone = client_id.clone();
+
+                    let will_delay_timer = tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_secs(will_delay_interval as u64)).await;
+
+                        trace!("Will Delay Interval timer expired for {client_id_clone}, publishing Will message");
+
+                        // Get Will message and publish it
+                        let session_guard = session_clone.read().await;
+                        if let Some(will) = session_guard.will_message() {
+                            let will_clone = will.clone();
+                            drop(session_guard);
+
+                            Self::publish_will_message(
+                                &will_clone.topic,
+                                will_clone.qos,
+                                will_clone.retain,
+                                will_clone.payload.clone(),
+                                will_clone.props.clone(),
+                                &subscription_store_clone,
+                                &retained_store_clone,
+                                &session_store_clone,
+                                &session_ref_clone,
+                                &security_clone,
+                            )
+                            .await;
+
+                            // Clear Will message after sending
+                            let mut session_guard = session_clone.write().await;
+                            session_guard.set_will_message(None);
+                        }
+                    });
+
+                    // Store the timer handle in the session
+                    let mut session_guard = session.write().await;
+                    session_guard.set_will_delay_timer(will_delay_timer);
+                    drop(session_guard);
+                }
+            } else {
+                drop(session_guard);
+            }
+        } else {
+            // Normal disconnect: clear Will without sending
+            trace!("Normal disconnect for client {client_id}, clearing Will without sending");
+            let mut session_guard = session.write().await;
+            session_guard.set_will_message(None);
+            drop(session_guard);
+        }
 
         // Handle session cleanup on disconnect
         let session_guard = session.read().await;
@@ -762,6 +997,11 @@ impl BrokerManager {
                 let session_store_clone = session_store.clone();
                 let subscription_tx_clone = subscription_tx.clone();
                 let client_id_clone = client_id.clone();
+                let session_clone = session.clone();
+                let subscription_store_clone = subscription_store.clone();
+                let retained_store_clone = retained_store.clone();
+                let security_clone = security.clone();
+                let session_ref_clone = session_ref.clone();
 
                 debug!(
                     "Starting session expiry timer for {client_id_clone}: {expiry_interval} seconds"
@@ -771,6 +1011,34 @@ impl BrokerManager {
                     tokio::time::sleep(Duration::from_secs(expiry_interval as u64)).await;
 
                     debug!("Session expiry timer expired for {client_id_clone}, removing session");
+
+                    // Check if there's a Will message that needs to be sent before deletion
+                    let session_guard = session_clone.read().await;
+                    if let Some(will) = session_guard.will_message() {
+                        let will_clone = will.clone();
+                        drop(session_guard);
+
+                        debug!(
+                            "Sending Will message before session deletion due to expiry for {client_id_clone}"
+                        );
+
+                        // Publish Will message
+                        BrokerManager::publish_will_message(
+                            &will_clone.topic,
+                            will_clone.qos,
+                            will_clone.retain,
+                            will_clone.payload.clone(),
+                            will_clone.props.clone(),
+                            &subscription_store_clone,
+                            &retained_store_clone,
+                            &session_store_clone,
+                            &session_ref_clone,
+                            &security_clone,
+                        )
+                        .await;
+                    } else {
+                        drop(session_guard);
+                    }
 
                     // Remove session from session store
                     session_store_clone.remove_session(&session_id_clone).await;
@@ -987,7 +1255,9 @@ impl BrokerManager {
             }
             mqtt_ep::packet::Packet::V3_1_1Disconnect(_)
             | mqtt_ep::packet::Packet::V5_0Disconnect(_) => {
-                return Err(anyhow::anyhow!("Client disconnected"));
+                // DISCONNECT packets are handled in the main loop
+                // This code path should not be reached
+                unreachable!("DISCONNECT packets should be handled in main loop");
             }
             _ => {
                 trace!("Unhandled packet type from client {client_id}");

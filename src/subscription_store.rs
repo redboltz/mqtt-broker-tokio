@@ -44,7 +44,7 @@ impl std::fmt::Display for SubscriptionError {
 }
 
 impl std::error::Error for SubscriptionError {}
-
+#[allow(dead_code)]
 pub type ClientId = String;
 
 /// Subscription information containing session reference, QoS, topic filter, subscription ID, RAP flag, and NL flag
@@ -66,11 +66,11 @@ impl EndpointRef {
     pub fn new(endpoint: Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>) -> Self {
         Self(endpoint)
     }
-
+    #[allow(dead_code)]
     pub fn endpoint(&self) -> &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>> {
         &self.0
     }
-
+    #[allow(dead_code)]
     pub fn into_arc(self) -> Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>> {
         self.0
     }
@@ -613,7 +613,7 @@ impl SubscriptionStore {
             }
         }
     }
-
+    #[allow(dead_code)]
     /// Check if a session is subscribed to a specific topic filter
     pub async fn is_subscribed(&self, session_ref: &SessionRef, topic_filter: &str) -> bool {
         let root = self.root.read().await;
@@ -621,7 +621,7 @@ impl SubscriptionStore {
 
         Self::check_subscription(&root, &segments, session_ref, 0)
     }
-
+    #[allow(dead_code)]
     /// Recursively check if a subscription exists
     fn check_subscription(
         node: &TrieNode,
@@ -668,6 +668,7 @@ impl SubscriptionStore {
     }
 
     /// Get all topic filters for a session
+    #[allow(dead_code)]
     pub async fn get_session_subscriptions(&self, session_ref: &SessionRef) -> Vec<String> {
         let root = self.root.read().await;
         let mut subscriptions = Vec::new();
@@ -684,6 +685,7 @@ impl SubscriptionStore {
     }
 
     /// Recursively collect all subscriptions for a session
+    #[allow(dead_code)]
     fn collect_session_subscriptions(
         node: &TrieNode,
         session_ref: &SessionRef,
