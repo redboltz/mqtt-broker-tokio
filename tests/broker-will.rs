@@ -24,7 +24,6 @@ mod common;
 
 use common::BrokerProcess;
 use mqtt_endpoint_tokio::mqtt_ep;
-use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
 
 /// Test: Will message is sent on abnormal disconnect (v3.1.1)
 #[tokio::test]

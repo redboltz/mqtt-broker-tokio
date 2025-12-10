@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use tracing::{trace, warn};
+use tracing::warn;
 
 /// Special group name that includes all users
 pub const ANY_GROUP_NAME: &str = "@any";
@@ -421,6 +421,7 @@ impl Security {
     }
 
     /// Get next rule number
+    #[allow(dead_code)]
     fn get_next_rule_nr(&self) -> usize {
         self.authorization
             .iter()

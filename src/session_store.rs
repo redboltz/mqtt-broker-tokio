@@ -149,6 +149,7 @@ impl Session {
         self.will_message = will;
     }
 
+    #[allow(dead_code)]
     /// Take will message (removes and returns it)
     pub fn take_will_message(&mut self) -> Option<WillMessage> {
         self.will_message.take()
@@ -179,6 +180,7 @@ impl Session {
         self.endpoint.as_ref()
     }
 
+    #[allow(dead_code)]
     /// Check if session is online
     pub fn is_online(&self) -> bool {
         self.online
@@ -229,6 +231,7 @@ impl Session {
         std::mem::take(&mut self.offline_messages)
     }
 
+    #[allow(dead_code)]
     /// Get offline message count
     pub fn offline_message_count(&self) -> usize {
         self.offline_messages.len()
@@ -479,6 +482,7 @@ impl SessionStore {
 
         removed
     }
+    #[allow(dead_code)]
 
     /// Get all session IDs
     pub async fn get_all_session_ids(&self) -> Vec<SessionId> {

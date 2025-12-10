@@ -14,6 +14,7 @@ use std::sync::Arc;
 use tracing::trace;
 
 impl BrokerManager {
+    #[allow(dead_code)]
     pub(super) async fn send_publish(
         endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
         topic: &str,
