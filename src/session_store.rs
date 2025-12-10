@@ -70,6 +70,7 @@ pub struct WillMessage {
     pub qos: mqtt_ep::packet::Qos,
     pub retain: bool,
     pub props: Vec<mqtt_ep::packet::Property>,
+    pub will_delay_interval: u32, // Will Delay Interval in seconds (MQTT v5.0)
 }
 
 /// Session state
@@ -101,6 +102,9 @@ pub struct Session {
 
     /// Will message (Last Will and Testament)
     will_message: Option<WillMessage>,
+
+    /// Will Delay Interval timer handle (MQTT v5.0)
+    will_delay_timer: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Session {
@@ -121,6 +125,7 @@ impl Session {
             need_keep,
             response_topic: None,
             will_message: None,
+            will_delay_timer: None,
         }
     }
 
@@ -188,6 +193,11 @@ impl Session {
         if let Some(timer) = self.expiry_timer.take() {
             timer.abort();
         }
+
+        // Cancel will delay timer when coming online
+        if let Some(timer) = self.will_delay_timer.take() {
+            timer.abort();
+        }
     }
 
     /// Mark session as offline
@@ -236,6 +246,22 @@ impl Session {
     /// Clear session expiry timer
     pub fn clear_expiry_timer(&mut self) {
         if let Some(timer) = self.expiry_timer.take() {
+            timer.abort();
+        }
+    }
+
+    /// Set will delay timer
+    pub fn set_will_delay_timer(&mut self, timer: tokio::task::JoinHandle<()>) {
+        // Cancel existing timer if any
+        if let Some(old_timer) = self.will_delay_timer.take() {
+            old_timer.abort();
+        }
+        self.will_delay_timer = Some(timer);
+    }
+
+    /// Clear will delay timer
+    pub fn clear_will_delay_timer(&mut self) {
+        if let Some(timer) = self.will_delay_timer.take() {
             timer.abort();
         }
     }
@@ -343,6 +369,8 @@ impl Drop for Session {
     fn drop(&mut self) {
         // Clean up expiry timer on drop
         self.clear_expiry_timer();
+        // Clean up will delay timer on drop
+        self.clear_will_delay_timer();
     }
 }
 

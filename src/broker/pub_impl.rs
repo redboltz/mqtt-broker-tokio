@@ -617,8 +617,14 @@ impl BrokerManager {
                 trace!("Removed retained message for topic '{topic}' (Will)");
             } else {
                 // Non-empty payload with retain flag: store/update retained message
+                // Filter out CONNECT-only properties before storing
+                let props_filtered: Vec<mqtt_ep::packet::Property> = props
+                    .iter()
+                    .filter(|p| !matches!(p, mqtt_ep::packet::Property::WillDelayInterval(_)))
+                    .cloned()
+                    .collect();
                 retained_store
-                    .store(topic, qos, payload.clone(), props.clone())
+                    .store(topic, qos, payload.clone(), props_filtered)
                     .await;
                 trace!("Stored retained Will message for topic '{topic}' with QoS {qos:?}");
             }
@@ -669,7 +675,12 @@ impl BrokerManager {
             let effective_retain = if subscription.rap { retain } else { false };
 
             // Prepare properties for v5.0
-            let mut props_copy = props.clone();
+            // Filter out CONNECT-only properties (like WillDelayInterval) that shouldn't be in PUBLISH
+            let mut props_copy: Vec<mqtt_ep::packet::Property> = props
+                .iter()
+                .filter(|p| !matches!(p, mqtt_ep::packet::Property::WillDelayInterval(_)))
+                .cloned()
+                .collect();
             if let Some(sub_id) = subscription.sub_id {
                 props_copy.push(mqtt_ep::packet::Property::SubscriptionIdentifier(
                     mqtt_ep::packet::SubscriptionIdentifier::new(sub_id).unwrap(),

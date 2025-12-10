@@ -372,6 +372,7 @@ impl BrokerManager {
                                 qos: will_qos,
                                 retain: will_retain,
                                 props: Vec::new(), // v3.1.1 doesn't support properties
+                                will_delay_interval: 0, // v3.1.1 doesn't support Will Delay Interval
                             })
                         } else {
                             None
@@ -458,8 +459,20 @@ impl BrokerManager {
                             let will_retain = connect.will_retain();
                             let will_props = connect.will_props().to_vec();
 
+                            // Extract Will Delay Interval from Will properties
+                            let will_delay_interval = will_props
+                                .iter()
+                                .find_map(|prop| {
+                                    if let mqtt_ep::packet::Property::WillDelayInterval(_) = prop {
+                                        prop.as_u32()
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .unwrap_or(0);
+
                             trace!(
-                                "MQTT v5.0 client {extracted_id} has Will message: topic={will_topic}, qos={will_qos:?}, retain={will_retain}"
+                                "MQTT v5.0 client {extracted_id} has Will message: topic={will_topic}, qos={will_qos:?}, retain={will_retain}, will_delay_interval={will_delay_interval}"
                             );
 
                             Some(WillMessage {
@@ -468,6 +481,7 @@ impl BrokerManager {
                                 qos: will_qos,
                                 retain: will_retain,
                                 props: will_props,
+                                will_delay_interval,
                             })
                         } else {
                             None
@@ -568,7 +582,38 @@ impl BrokerManager {
 
         let session_present = if clean_start_or_session {
             // Clean session/start: remove existing session if any
-            if existing_session.is_some() {
+            if let Some(ref existing_sess) = existing_session {
+                // Check if there's a Will message that needs to be sent before deletion
+                let session_guard = existing_sess.read().await;
+                if let Some(will) = session_guard.will_message() {
+                    let will_clone = will.clone();
+                    drop(session_guard);
+
+                    debug!(
+                        "Sending Will message before session deletion due to CleanStart:1 for {client_id}"
+                    );
+
+                    // Create SessionRef for the existing session
+                    let existing_session_ref = SessionRef::new(session_id.clone());
+
+                    // Publish Will message
+                    Self::publish_will_message(
+                        &will_clone.topic,
+                        will_clone.qos,
+                        will_clone.retain,
+                        will_clone.payload.clone(),
+                        will_clone.props.clone(),
+                        &subscription_store,
+                        &retained_store,
+                        &session_store,
+                        &existing_session_ref,
+                        &security,
+                    )
+                    .await;
+                } else {
+                    drop(session_guard);
+                }
+
                 session_store.remove_session(&session_id).await;
             }
             false
@@ -828,39 +873,108 @@ impl BrokerManager {
 
         trace!("Endpoint task finished for client {client_id}");
 
+        // Check if session will be kept to determine Will Delay Interval behavior
+        let session_guard = session.read().await;
+        let need_keep = session_guard.need_keep();
+        drop(session_guard);
+
         // Publish Will message if needed (abnormal disconnect or DisconnectWithWillMessage)
+        debug!("Disconnect handling for {client_id}: normal_disconnect={normal_disconnect}");
         if !normal_disconnect {
             let session_guard = session.read().await;
+            let has_will = session_guard.will_message().is_some();
+            debug!("Abnormal disconnect for {client_id}, has_will={has_will}");
             if let Some(will) = session_guard.will_message() {
-                trace!(
-                    "Publishing Will message for client {client_id}: topic={}",
-                    will.topic
-                );
+                let will_delay_interval = will.will_delay_interval;
                 let will_clone = will.clone();
                 drop(session_guard);
 
-                // Publish Will message to all subscribers
-                Self::publish_will_message(
-                    &will_clone.topic,
-                    will_clone.qos,
-                    will_clone.retain,
-                    will_clone.payload.clone(),
-                    will_clone.props.clone(),
-                    &subscription_store,
-                    &retained_store,
-                    &session_store,
-                    &session_ref,
-                    &security,
-                )
-                .await;
+                // Check if we should send Will immediately or start a timer
+                debug!(
+                    "Will disconnect for {client_id}: will_delay_interval={will_delay_interval}, need_keep={need_keep}, condition check: will_delay_interval==0: {}, !need_keep: {}",
+                    will_delay_interval == 0,
+                    !need_keep
+                );
+
+                if will_delay_interval == 0 || !need_keep {
+                    // Send Will immediately: either no delay specified or session won't be kept
+                    trace!(
+                        "Publishing Will message immediately for client {client_id}: topic={}, will_delay_interval={will_delay_interval}, need_keep={need_keep}",
+                        will_clone.topic
+                    );
+
+                    // Publish Will message to all subscribers
+                    Self::publish_will_message(
+                        &will_clone.topic,
+                        will_clone.qos,
+                        will_clone.retain,
+                        will_clone.payload.clone(),
+                        will_clone.props.clone(),
+                        &subscription_store,
+                        &retained_store,
+                        &session_store,
+                        &session_ref,
+                        &security,
+                    )
+                    .await;
+
+                    // Clear Will message after sending
+                    let mut session_guard = session.write().await;
+                    session_guard.set_will_message(None);
+                    drop(session_guard);
+                } else {
+                    // Start Will Delay Interval timer
+                    debug!(
+                        "Starting Will Delay Interval timer for {client_id}: {will_delay_interval} seconds"
+                    );
+
+                    let session_clone = session.clone();
+                    let subscription_store_clone = subscription_store.clone();
+                    let retained_store_clone = retained_store.clone();
+                    let session_store_clone = session_store.clone();
+                    let session_ref_clone = session_ref.clone();
+                    let security_clone = security.clone();
+                    let client_id_clone = client_id.clone();
+
+                    let will_delay_timer = tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_secs(will_delay_interval as u64)).await;
+
+                        debug!("Will Delay Interval timer expired for {client_id_clone}, publishing Will message");
+
+                        // Get Will message and publish it
+                        let session_guard = session_clone.read().await;
+                        if let Some(will) = session_guard.will_message() {
+                            let will_clone = will.clone();
+                            drop(session_guard);
+
+                            Self::publish_will_message(
+                                &will_clone.topic,
+                                will_clone.qos,
+                                will_clone.retain,
+                                will_clone.payload.clone(),
+                                will_clone.props.clone(),
+                                &subscription_store_clone,
+                                &retained_store_clone,
+                                &session_store_clone,
+                                &session_ref_clone,
+                                &security_clone,
+                            )
+                            .await;
+
+                            // Clear Will message after sending
+                            let mut session_guard = session_clone.write().await;
+                            session_guard.set_will_message(None);
+                        }
+                    });
+
+                    // Store the timer handle in the session
+                    let mut session_guard = session.write().await;
+                    session_guard.set_will_delay_timer(will_delay_timer);
+                    drop(session_guard);
+                }
             } else {
                 drop(session_guard);
             }
-
-            // Clear Will message after sending (or if it was None)
-            let mut session_guard = session.write().await;
-            session_guard.set_will_message(None);
-            drop(session_guard);
         } else {
             // Normal disconnect: clear Will without sending
             trace!("Normal disconnect for client {client_id}, clearing Will without sending");
@@ -888,6 +1002,11 @@ impl BrokerManager {
                 let session_store_clone = session_store.clone();
                 let subscription_tx_clone = subscription_tx.clone();
                 let client_id_clone = client_id.clone();
+                let session_clone = session.clone();
+                let subscription_store_clone = subscription_store.clone();
+                let retained_store_clone = retained_store.clone();
+                let security_clone = security.clone();
+                let session_ref_clone = session_ref.clone();
 
                 debug!(
                     "Starting session expiry timer for {client_id_clone}: {expiry_interval} seconds"
@@ -897,6 +1016,34 @@ impl BrokerManager {
                     tokio::time::sleep(Duration::from_secs(expiry_interval as u64)).await;
 
                     debug!("Session expiry timer expired for {client_id_clone}, removing session");
+
+                    // Check if there's a Will message that needs to be sent before deletion
+                    let session_guard = session_clone.read().await;
+                    if let Some(will) = session_guard.will_message() {
+                        let will_clone = will.clone();
+                        drop(session_guard);
+
+                        debug!(
+                            "Sending Will message before session deletion due to expiry for {client_id_clone}"
+                        );
+
+                        // Publish Will message
+                        BrokerManager::publish_will_message(
+                            &will_clone.topic,
+                            will_clone.qos,
+                            will_clone.retain,
+                            will_clone.payload.clone(),
+                            will_clone.props.clone(),
+                            &subscription_store_clone,
+                            &retained_store_clone,
+                            &session_store_clone,
+                            &session_ref_clone,
+                            &security_clone,
+                        )
+                        .await;
+                    } else {
+                        drop(session_guard);
+                    }
 
                     // Remove session from session store
                     session_store_clone.remove_session(&session_id_clone).await;
