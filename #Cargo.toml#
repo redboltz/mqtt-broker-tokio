@@ -1,0 +1,67 @@
+[package]
+name = "mqtt-broker-tokio"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Takatoshi Kondo <redboltz@gmail.com>"]
+description = "A high-performance async MQTT broker implementation built with tokio and mqtt-endpoint-tokio"
+repository = "https://github.com/redboltz/mqtt-broker-tokio"
+homepage = "https://github.com/redboltz/mqtt-broker-tokio"
+documentation = "https://docs.rs/mqtt-broker-tokio"
+readme = "README.md"
+keywords = ["mqtt", "broker", "tokio", "async", "server"]
+categories = ["network-programming", "asynchronous"]
+
+[[bin]]
+name = "mqtt-broker"
+path = "src/main.rs"
+
+[dependencies]
+# Core MQTT functionality
+mqtt-endpoint-tokio = "0.1"
+
+# Application framework
+anyhow = "1.0"
+clap = { version = "4.0", features = ["derive"] }
+tokio = { version = "1.0", features = ["full"] }
+
+# Data structures
+uuid = { version = "1.0", features = ["v4", "serde"] }
+serde = { version = "1.0", features = ["derive"] }
+prefix_tree_map = "0.2"
+
+# TLS support
+tokio-rustls = "0.24"
+rustls = "0.21"
+rustls-native-certs = "0.6"
+rustls-pemfile = "1.0"
+
+# WebSocket support
+tokio-tungstenite = "0.20"
+tungstenite = "0.20"
+futures-util = "0.3"
+futures = "0.3"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "ansi"] }
+tracing-appender = "0.2"
+
+# System utilities
+num_cpus = "1.0"
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+# Release optimization settings
+[profile.release]
+# Enable maximum optimization
+opt-level = 3
+# Enable link-time optimization for better performance
+lto = true
+# Use 1 codegen unit for better optimization (slower compile, faster runtime)
+codegen-units = 1
+# Enable panic = abort for smaller binary size and better performance
+panic = "abort"
+# Strip debug symbols to reduce binary size
+strip = true

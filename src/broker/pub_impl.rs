@@ -591,4 +591,114 @@ impl BrokerManager {
 
         Ok(())
     }
+
+    /// Publish Will message to subscribers (without QoS response)
+    /// This is used for Will messages where the publisher endpoint is already disconnected
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn publish_will_message(
+        topic: &str,
+        qos: mqtt_ep::packet::Qos,
+        retain: bool,
+        payload: mqtt_ep::common::ArcPayload,
+        props: Vec<mqtt_ep::packet::Property>,
+        subscription_store: &Arc<SubscriptionStore>,
+        retained_store: &Arc<RetainedStore>,
+        session_store: &Arc<SessionStore>,
+        publisher_session_ref: &crate::session_store::SessionRef,
+        security: &Option<std::sync::Arc<crate::auth_impl::Security>>,
+    ) {
+        use crate::auth_impl::AuthorizationType;
+
+        // Handle retained message
+        if retain {
+            if payload.is_empty() {
+                // Empty payload with retain flag: remove retained message
+                retained_store.remove(topic).await;
+                trace!("Removed retained message for topic '{topic}' (Will)");
+            } else {
+                // Non-empty payload with retain flag: store/update retained message
+                retained_store
+                    .store(topic, qos, payload.clone(), props.clone())
+                    .await;
+                trace!("Stored retained Will message for topic '{topic}' with QoS {qos:?}");
+            }
+        }
+
+        // Create authorization checker if security is configured
+        let auth_checker = security.as_ref().map(|sec| {
+            let sec_clone = Arc::clone(sec);
+            move |session_ref: &crate::session_store::SessionRef, topic: &str| {
+                if let Some(ref username) = session_ref.session_id.user_name {
+                    matches!(
+                        sec_clone.auth_sub(topic, username),
+                        AuthorizationType::Allow
+                    )
+                } else {
+                    false
+                }
+            }
+        });
+
+        let subscriptions = subscription_store
+            .find_subscribers(topic, auth_checker)
+            .await;
+
+        if subscriptions.is_empty() {
+            trace!("No subscribers found for Will message topic '{topic}'");
+            return;
+        }
+
+        // Send to subscribers sequentially (each endpoint.send() queues via mpsc)
+        for subscription in subscriptions {
+            // NoLocal check: if nl=true and publisher_session == subscriber_session, skip
+            if subscription.nl
+                && subscription.session_ref.session_id == publisher_session_ref.session_id
+            {
+                trace!(
+                    "Skipping Will delivery to subscriber due to NoLocal: topic='{topic}', session={:?}",
+                    subscription.session_ref.session_id
+                );
+                continue;
+            }
+
+            // QoS arbitration: use the lower of publish QoS and subscription QoS
+            let effective_qos = qos.min(subscription.qos);
+
+            // RAP (Retain As Published): if rap is false, always send with retain=false
+            // if rap is true, send with the original retain flag
+            let effective_retain = if subscription.rap { retain } else { false };
+
+            // Prepare properties for v5.0
+            let mut props_copy = props.clone();
+            if let Some(sub_id) = subscription.sub_id {
+                props_copy.push(mqtt_ep::packet::Property::SubscriptionIdentifier(
+                    mqtt_ep::packet::SubscriptionIdentifier::new(sub_id).unwrap(),
+                ));
+            }
+
+            // Get session and send PUBLISH
+            if let Some(session_arc) = session_store
+                .get_session(&subscription.session_ref.session_id)
+                .await
+            {
+                let mut session_guard = session_arc.write().await;
+                session_guard
+                    .send_publish(
+                        topic.to_string(),
+                        effective_qos,
+                        effective_retain,
+                        payload.clone(),
+                        props_copy,
+                    )
+                    .await;
+            } else {
+                trace!(
+                    "Session not found for subscription: {:?}",
+                    subscription.session_ref
+                );
+            }
+        }
+
+        trace!("Will message published to subscribers for topic '{topic}'");
+    }
 }

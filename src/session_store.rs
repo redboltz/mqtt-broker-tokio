@@ -62,6 +62,16 @@ pub struct OfflineMessage {
     pub props: Vec<mqtt_ep::packet::Property>,
 }
 
+/// Will message (Last Will and Testament)
+#[derive(Debug, Clone)]
+pub struct WillMessage {
+    pub topic: String,
+    pub payload: mqtt_ep::common::ArcPayload,
+    pub qos: mqtt_ep::packet::Qos,
+    pub retain: bool,
+    pub props: Vec<mqtt_ep::packet::Property>,
+}
+
 /// Session state
 pub struct Session {
     /// Session identifier
@@ -88,6 +98,9 @@ pub struct Session {
     /// Response Topic for Request/Response pattern (MQTT v5.0)
     /// Generated when Request Response Information is 1 in CONNECT
     response_topic: Option<String>,
+
+    /// Will message (Last Will and Testament)
+    will_message: Option<WillMessage>,
 }
 
 impl Session {
@@ -107,6 +120,7 @@ impl Session {
             expiry_timer: None,
             need_keep,
             response_topic: None,
+            will_message: None,
         }
     }
 
@@ -118,6 +132,21 @@ impl Session {
     /// Set response topic
     pub fn set_response_topic(&mut self, topic: Option<String>) {
         self.response_topic = topic;
+    }
+
+    /// Get will message
+    pub fn will_message(&self) -> Option<&WillMessage> {
+        self.will_message.as_ref()
+    }
+
+    /// Set will message
+    pub fn set_will_message(&mut self, will: Option<WillMessage>) {
+        self.will_message = will;
+    }
+
+    /// Take will message (removes and returns it)
+    pub fn take_will_message(&mut self) -> Option<WillMessage> {
+        self.will_message.take()
     }
 
     /// Get session expiry interval
