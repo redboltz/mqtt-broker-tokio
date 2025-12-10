@@ -483,7 +483,6 @@ impl SessionStore {
         removed
     }
     #[allow(dead_code)]
-
     /// Get all session IDs
     pub async fn get_all_session_ids(&self) -> Vec<SessionId> {
         let sessions = self.sessions.read().await;

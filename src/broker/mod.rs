@@ -878,24 +878,19 @@ impl BrokerManager {
         let need_keep = session_guard.need_keep();
         drop(session_guard);
 
+        trace!("Disconnect for {client_id}: normal_disconnect={normal_disconnect}, need_keep={need_keep}");
+
         // Publish Will message if needed (abnormal disconnect or DisconnectWithWillMessage)
-        debug!("Disconnect handling for {client_id}: normal_disconnect={normal_disconnect}");
         if !normal_disconnect {
             let session_guard = session.read().await;
-            let has_will = session_guard.will_message().is_some();
-            debug!("Abnormal disconnect for {client_id}, has_will={has_will}");
             if let Some(will) = session_guard.will_message() {
                 let will_delay_interval = will.will_delay_interval;
                 let will_clone = will.clone();
                 drop(session_guard);
 
-                // Check if we should send Will immediately or start a timer
-                debug!(
-                    "Will disconnect for {client_id}: will_delay_interval={will_delay_interval}, need_keep={need_keep}, condition check: will_delay_interval==0: {}, !need_keep: {}",
-                    will_delay_interval == 0,
-                    !need_keep
-                );
+                trace!("Will message found: delay={will_delay_interval}s, need_keep={need_keep}");
 
+                // Check if we should send Will immediately or start a timer
                 if will_delay_interval == 0 || !need_keep {
                     // Send Will immediately: either no delay specified or session won't be kept
                     trace!(
@@ -924,7 +919,7 @@ impl BrokerManager {
                     drop(session_guard);
                 } else {
                     // Start Will Delay Interval timer
-                    debug!(
+                    trace!(
                         "Starting Will Delay Interval timer for {client_id}: {will_delay_interval} seconds"
                     );
 
@@ -939,7 +934,7 @@ impl BrokerManager {
                     let will_delay_timer = tokio::spawn(async move {
                         tokio::time::sleep(Duration::from_secs(will_delay_interval as u64)).await;
 
-                        debug!("Will Delay Interval timer expired for {client_id_clone}, publishing Will message");
+                        trace!("Will Delay Interval timer expired for {client_id_clone}, publishing Will message");
 
                         // Get Will message and publish it
                         let session_guard = session_clone.read().await;

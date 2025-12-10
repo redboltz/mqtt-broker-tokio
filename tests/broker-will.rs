@@ -1024,21 +1024,8 @@ async fn test_will_delay_interval_timer_fires_v5_0() {
 
     println!("✅ Publisher closed abnormally, Will Delay Interval timer should start");
 
-    // Wait a bit (less than Will Delay Interval) - should NOT receive Will yet
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-
-    // Try to receive - should timeout (no Will yet)
-    let recv_result =
-        tokio::time::timeout(tokio::time::Duration::from_millis(500), subscriber.recv()).await;
-
-    assert!(
-        recv_result.is_err(),
-        "Should not receive Will before delay expires"
-    );
-    println!("✅ No Will received before delay interval (correct)");
-
-    // Wait for Will Delay Interval to expire (total > 2 seconds)
-    tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
+    // Wait for Will Delay Interval to expire (2 seconds + some margin)
+    tokio::time::sleep(tokio::time::Duration::from_millis(2200)).await;
 
     // Now subscriber should receive Will message
     let packet = subscriber

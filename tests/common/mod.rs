@@ -68,7 +68,7 @@ impl BrokerProcess {
 
         // Run the built binary directly
         let mut cmd = Command::new(broker_path);
-        cmd.args(["--tcp-port", &port.to_string()]);
+        cmd.args(["--tcp-port", &port.to_string(), "--log-level", "trace"]);
 
         // Set RUST_LOG
         cmd.env("RUST_LOG", "trace");
