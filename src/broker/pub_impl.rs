@@ -602,6 +602,7 @@ impl BrokerManager {
         retain: bool,
         payload: mqtt_ep::common::ArcPayload,
         props: Vec<mqtt_ep::packet::Property>,
+        registered_at: std::time::Instant,
         subscription_store: &Arc<SubscriptionStore>,
         retained_store: &Arc<RetainedStore>,
         session_store: &Arc<SessionStore>,
@@ -609,6 +610,15 @@ impl BrokerManager {
         security: &Option<std::sync::Arc<crate::auth_impl::Security>>,
     ) {
         use crate::auth_impl::AuthorizationType;
+
+        // Check MessageExpiryInterval and update props
+        let (updated_props, is_expired) =
+            Self::update_message_expiry_interval(&props, registered_at);
+
+        if is_expired {
+            trace!("Will message for topic '{topic}' has expired, not publishing");
+            return;
+        }
 
         // Handle retained message
         if retain {
@@ -619,7 +629,7 @@ impl BrokerManager {
             } else {
                 // Non-empty payload with retain flag: store/update retained message
                 // Filter out CONNECT-only properties before storing
-                let props_filtered: Vec<mqtt_ep::packet::Property> = props
+                let props_filtered: Vec<mqtt_ep::packet::Property> = updated_props
                     .iter()
                     .filter(|p| !matches!(p, mqtt_ep::packet::Property::WillDelayInterval(_)))
                     .cloned()
@@ -677,7 +687,7 @@ impl BrokerManager {
 
             // Prepare properties for v5.0
             // Filter out CONNECT-only properties (like WillDelayInterval) that shouldn't be in PUBLISH
-            let mut props_copy: Vec<mqtt_ep::packet::Property> = props
+            let mut props_copy: Vec<mqtt_ep::packet::Property> = updated_props
                 .iter()
                 .filter(|p| !matches!(p, mqtt_ep::packet::Property::WillDelayInterval(_)))
                 .cloned()
@@ -712,5 +722,52 @@ impl BrokerManager {
         }
 
         trace!("Will message published to subscribers for topic '{topic}'");
+    }
+
+    /// Update MessageExpiryInterval property based on elapsed time
+    ///
+    /// Returns (updated_props, is_expired)
+    /// - updated_props: Properties with MessageExpiryInterval updated or removed
+    /// - is_expired: true if message has expired (interval <= 0)
+    pub(super) fn update_message_expiry_interval(
+        props: &[mqtt_ep::packet::Property],
+        stored_at: std::time::Instant,
+    ) -> (Vec<mqtt_ep::packet::Property>, bool) {
+        let elapsed_secs = stored_at.elapsed().as_secs();
+
+        let mut updated_props = Vec::new();
+        let mut found_expiry = false;
+        let mut is_expired = false;
+
+        for prop in props {
+            if let mqtt_ep::packet::Property::MessageExpiryInterval(_) = prop {
+                found_expiry = true;
+                let original_interval = prop.as_u32().unwrap_or(0);
+
+                if elapsed_secs >= original_interval as u64 {
+                    // Message has expired
+                    is_expired = true;
+                    // Don't add MessageExpiryInterval to props (remove it)
+                } else {
+                    // Update interval
+                    let new_interval = original_interval - elapsed_secs as u32;
+                    if let Ok(new_mei) = mqtt_ep::packet::MessageExpiryInterval::new(new_interval) {
+                        updated_props
+                            .push(mqtt_ep::packet::Property::MessageExpiryInterval(new_mei));
+                    }
+                }
+            } else {
+                // Keep other properties as-is
+                updated_props.push(prop.clone());
+            }
+        }
+
+        // If no MessageExpiryInterval found, message never expires
+        if !found_expiry {
+            is_expired = false;
+            updated_props = props.to_vec();
+        }
+
+        (updated_props, is_expired)
     }
 }

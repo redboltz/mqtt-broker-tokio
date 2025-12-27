@@ -21,19 +21,21 @@
 // SOFTWARE.
 
 use mqtt_endpoint_tokio::mqtt_ep;
-use std::sync::Arc;
 
 // Include session_store module for testing (must be included first since subscription_store depends on it)
+#[allow(dead_code)]
 mod session_store {
     include!("../src/session_store.rs");
 }
 
 // Include shared_subscription_manager module for testing (subscription_store depends on it)
+#[allow(dead_code)]
 mod shared_subscription_manager {
     include!("../src/shared_subscription_manager.rs");
 }
 
 // Include subscription_store module for testing
+#[allow(dead_code)]
 mod common_subscription {
     include!("../src/subscription_store.rs");
 }

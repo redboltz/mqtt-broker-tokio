@@ -33,6 +33,7 @@ pub struct RetainedMessage {
     pub qos: mqtt_ep::packet::Qos,
     pub payload: mqtt_ep::common::ArcPayload,
     pub props: Vec<mqtt_ep::packet::Property>,
+    pub stored_at: std::time::Instant, // Time when message was stored
 }
 
 /// Trie node for retained messages (simpler than subscription trie)
@@ -77,6 +78,7 @@ impl RetainedStore {
             qos,
             payload,
             props,
+            stored_at: std::time::Instant::now(),
         });
 
         trace!("Stored retained message for topic '{topic_name}' with QoS {qos:?}");

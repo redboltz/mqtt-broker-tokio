@@ -33,6 +33,7 @@ struct SessionRef {
 
 /// Subscription details
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct SubscriptionDetails {
     qos: u8,
     topic_filter: String,

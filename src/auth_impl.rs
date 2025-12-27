@@ -492,6 +492,7 @@ impl Security {
     }
 
     /// Get unauthenticated username
+    #[allow(dead_code)]
     pub fn login_unauthenticated(&self) -> Option<&str> {
         self.unauthenticated.as_deref()
     }
