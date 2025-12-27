@@ -163,12 +163,6 @@ impl Session {
         self.will_message = will;
     }
 
-    #[allow(dead_code)]
-    /// Take will message (removes and returns it)
-    pub fn take_will_message(&mut self) -> Option<WillMessage> {
-        self.will_message.take()
-    }
-
     /// Get session expiry interval
     pub fn session_expiry_interval(&self) -> u32 {
         self.session_expiry_interval
@@ -192,12 +186,6 @@ impl Session {
     /// Get endpoint reference (if online)
     pub fn endpoint(&self) -> Option<&Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>> {
         self.endpoint.as_ref()
-    }
-
-    #[allow(dead_code)]
-    /// Check if session is online
-    pub fn is_online(&self) -> bool {
-        self.online
     }
 
     /// Set endpoint and mark as online
@@ -243,12 +231,6 @@ impl Session {
     /// Take all offline messages
     pub fn take_offline_messages(&mut self) -> Vec<OfflineMessage> {
         std::mem::take(&mut self.offline_messages)
-    }
-
-    #[allow(dead_code)]
-    /// Get offline message count
-    pub fn offline_message_count(&self) -> usize {
-        self.offline_messages.len()
     }
 
     /// Remove outgoing PUBLISH tracking (called when ACK received)
@@ -560,12 +542,6 @@ impl SessionStore {
         }
 
         removed
-    }
-    #[allow(dead_code)]
-    /// Get all session IDs
-    pub async fn get_all_session_ids(&self) -> Vec<SessionId> {
-        let sessions = self.sessions.read().await;
-        sessions.keys().cloned().collect()
     }
 
     /// Disconnect existing online session (for session takeover)
