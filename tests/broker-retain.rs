@@ -1048,7 +1048,7 @@ async fn test_retained_wildcard_single_entry_v5_0() {
         };
 
         let mut builder = mqtt_ep::packet::v5_0::Publish::builder()
-            .topic_name(topic)
+            .topic_name(*topic)
             .expect("Failed to set topic_name")
             .qos(qos)
             .retain(true)
@@ -1153,7 +1153,7 @@ async fn test_retained_wildcard_multiple_entries_v5_0() {
         };
 
         let mut builder = mqtt_ep::packet::v5_0::Publish::builder()
-            .topic_name(topic)
+            .topic_name(*topic)
             .expect("Failed to set topic_name")
             .qos(qos)
             .retain(true)

@@ -420,17 +420,6 @@ impl Security {
         topic_filter.split('/').map(|s| s.to_string()).collect()
     }
 
-    /// Get next rule number
-    #[allow(dead_code)]
-    fn get_next_rule_nr(&self) -> usize {
-        self.authorization
-            .iter()
-            .map(|a| a.rule_nr)
-            .max()
-            .unwrap_or(0)
-            + 1
-    }
-
     /// Validate configuration
     fn validate(&self) -> Result<()> {
         // Validate group members exist
@@ -489,12 +478,6 @@ impl Security {
     /// Get anonymous username
     pub fn login_anonymous(&self) -> Option<&str> {
         self.anonymous.as_deref()
-    }
-
-    /// Get unauthenticated username
-    #[allow(dead_code)]
-    pub fn login_unauthenticated(&self) -> Option<&str> {
-        self.unauthenticated.as_deref()
     }
 
     /// Calculate SHA256 hash
