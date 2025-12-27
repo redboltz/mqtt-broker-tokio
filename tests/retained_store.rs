@@ -26,6 +26,7 @@ use mqtt_endpoint_tokio::mqtt_ep::prelude::IntoPayload;
 // We need to expose RetainedStore for testing
 // Since it's in src/, we need to add a lib.rs or make it a module
 // For now, we'll include it directly
+#[allow(dead_code)]
 mod common_retained {
     include!("../src/retained_store.rs");
 }

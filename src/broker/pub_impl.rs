@@ -770,17 +770,4 @@ impl BrokerManager {
 
         (updated_props, is_expired)
     }
-
-    /// Extract MessageExpiryInterval value from properties (if present)
-    pub(super) fn extract_message_expiry_interval(
-        props: &[mqtt_ep::packet::Property],
-    ) -> Option<u32> {
-        props.iter().find_map(|prop| {
-            if let mqtt_ep::packet::Property::MessageExpiryInterval(_) = prop {
-                prop.as_u32()
-            } else {
-                None
-            }
-        })
-    }
 }

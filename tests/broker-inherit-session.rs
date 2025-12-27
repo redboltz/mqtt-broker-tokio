@@ -24,7 +24,6 @@ mod common;
 
 use common::BrokerProcess;
 use mqtt_endpoint_tokio::mqtt_ep;
-use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
 
 /// Test: Simple subscription persistence (v5.0)
 /// Tests that subscriptions persist across disconnect/reconnect

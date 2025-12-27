@@ -26,6 +26,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
 use tokio::net::TcpStream;
 
+#[allow(dead_code)]
 pub const BROKER_PORT: u16 = 1883;
 
 static PORT_COUNTER: AtomicU16 = AtomicU16::new(10000);
@@ -161,6 +162,7 @@ impl Drop for BrokerProcess {
     }
 }
 
+#[allow(dead_code)]
 pub async fn create_connected_endpoint(
     client_id: &str,
     port: u16,

@@ -24,7 +24,6 @@ mod common;
 
 use common::BrokerProcess;
 use mqtt_endpoint_tokio::mqtt_ep;
-use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
 
 /// Test exact sequence from GitHub issue #716
 /// Subscribe order:
