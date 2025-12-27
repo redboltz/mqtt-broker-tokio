@@ -60,6 +60,7 @@ pub struct OfflineMessage {
     pub retain: bool,
     pub payload: mqtt_ep::common::ArcPayload,
     pub props: Vec<mqtt_ep::packet::Property>,
+    pub stored_at: std::time::Instant, // Time when message was stored
 }
 
 /// Will message (Last Will and Testament)
@@ -71,6 +72,7 @@ pub struct WillMessage {
     pub retain: bool,
     pub props: Vec<mqtt_ep::packet::Property>,
     pub will_delay_interval: u32, // Will Delay Interval in seconds (MQTT v5.0)
+    pub registered_at: std::time::Instant, // Time when Will was registered (CONNECT time)
 }
 
 /// Session state
@@ -362,6 +364,7 @@ impl Session {
                     retain,
                     payload,
                     props,
+                    stored_at: std::time::Instant::now(),
                 });
             }
         }

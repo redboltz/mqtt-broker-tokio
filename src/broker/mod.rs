@@ -373,6 +373,7 @@ impl BrokerManager {
                                 retain: will_retain,
                                 props: Vec::new(), // v3.1.1 doesn't support properties
                                 will_delay_interval: 0, // v3.1.1 doesn't support Will Delay Interval
+                                registered_at: std::time::Instant::now(),
                             })
                         } else {
                             None
@@ -482,6 +483,7 @@ impl BrokerManager {
                                 retain: will_retain,
                                 props: will_props,
                                 will_delay_interval,
+                                registered_at: std::time::Instant::now(),
                             })
                         } else {
                             None
@@ -603,6 +605,7 @@ impl BrokerManager {
                         will_clone.retain,
                         will_clone.payload.clone(),
                         will_clone.props.clone(),
+                        will_clone.registered_at,
                         &subscription_store,
                         &retained_store,
                         &session_store,
@@ -905,6 +908,7 @@ impl BrokerManager {
                         will_clone.retain,
                         will_clone.payload.clone(),
                         will_clone.props.clone(),
+                        will_clone.registered_at,
                         &subscription_store,
                         &retained_store,
                         &session_store,
@@ -948,6 +952,7 @@ impl BrokerManager {
                                 will_clone.retain,
                                 will_clone.payload.clone(),
                                 will_clone.props.clone(),
+                                will_clone.registered_at,
                                 &subscription_store_clone,
                                 &retained_store_clone,
                                 &session_store_clone,
@@ -1029,6 +1034,7 @@ impl BrokerManager {
                             will_clone.retain,
                             will_clone.payload.clone(),
                             will_clone.props.clone(),
+                            will_clone.registered_at,
                             &subscription_store_clone,
                             &retained_store_clone,
                             &session_store_clone,
