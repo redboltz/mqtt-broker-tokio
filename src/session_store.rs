@@ -21,6 +21,7 @@
 // SOFTWARE.
 
 use mqtt_endpoint_tokio::mqtt_ep;
+use mqtt_endpoint_tokio::mqtt_ep::prelude::PropertyValueAccess;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -75,6 +76,13 @@ pub struct WillMessage {
     pub registered_at: std::time::Instant, // Time when Will was registered (CONNECT time)
 }
 
+/// Outgoing PUBLISH tracking for MessageExpiryInterval timeout management
+#[derive(Debug, Clone)]
+struct OutgoingPublishInfo {
+    sent_at: std::time::Instant,
+    message_expiry_interval: Option<u32>, // None if no expiry
+}
+
 /// Session state
 pub struct Session {
     /// Session identifier
@@ -107,6 +115,9 @@ pub struct Session {
 
     /// Will Delay Interval timer handle (MQTT v5.0)
     will_delay_timer: Option<tokio::task::JoinHandle<()>>,
+
+    /// Outgoing PUBLISH tracking for MessageExpiryInterval timeout (PacketId -> Info)
+    outgoing_publishes: HashMap<u16, OutgoingPublishInfo>,
 }
 
 impl Session {
@@ -128,6 +139,7 @@ impl Session {
             response_topic: None,
             will_message: None,
             will_delay_timer: None,
+            outgoing_publishes: HashMap::new(),
         }
     }
 
@@ -239,6 +251,50 @@ impl Session {
         self.offline_messages.len()
     }
 
+    /// Remove outgoing PUBLISH tracking (called when ACK received)
+    pub fn remove_outgoing_publish(&mut self, packet_id: u16) {
+        self.outgoing_publishes.remove(&packet_id);
+    }
+
+    /// Check and clean up expired outgoing PUBLISHes
+    /// Returns Vec of expired packet IDs that need to be released
+    pub async fn cleanup_expired_outgoing_publishes(&mut self) -> Vec<u16> {
+        let mut expired_packet_ids = Vec::new();
+
+        // Collect expired packet IDs
+        self.outgoing_publishes.retain(|&packet_id, info| {
+            if let Some(expiry_interval) = info.message_expiry_interval {
+                let elapsed_secs = info.sent_at.elapsed().as_secs();
+                if elapsed_secs >= expiry_interval as u64 {
+                    // Expired - collect packet_id for release
+                    expired_packet_ids.push(packet_id);
+                    trace!(
+                        "Outgoing PUBLISH packet_id={packet_id} expired (elapsed={elapsed_secs}s, expiry={expiry_interval}s)"
+                    );
+                    false // Remove from map
+                } else {
+                    true // Keep
+                }
+            } else {
+                true // No expiry - keep
+            }
+        });
+
+        // Release expired packet IDs
+        if let Some(endpoint) = &self.endpoint {
+            for packet_id in &expired_packet_ids {
+                if let Err(e) = endpoint.release_packet_id(*packet_id).await {
+                    debug!(
+                        "Failed to release expired packet_id={packet_id} for session {:?}: {e}",
+                        self.session_id
+                    );
+                }
+            }
+        }
+
+        expired_packet_ids
+    }
+
     /// Set session expiry timer
     pub fn set_expiry_timer(&mut self, timer: tokio::task::JoinHandle<()>) {
         // Cancel existing timer if any
@@ -313,6 +369,7 @@ impl Session {
                                 self.session_id
                             );
                         }
+                        // v3.1.1 has no MessageExpiryInterval - no tracking needed
                     }
                     mqtt_ep::Version::V5_0 => {
                         let mut builder = mqtt_ep::packet::v5_0::Publish::builder()
@@ -326,19 +383,38 @@ impl Session {
                             builder = builder.props(props.clone());
                         }
 
-                        let publish = if qos != mqtt_ep::packet::Qos::AtMostOnce {
+                        // Extract MessageExpiryInterval from props
+                        let message_expiry_interval = props.iter().find_map(|prop| {
+                            if let mqtt_ep::packet::Property::MessageExpiryInterval(_) = prop {
+                                prop.as_u32()
+                            } else {
+                                None
+                            }
+                        });
+
+                        let (publish, packet_id_opt) = if qos != mqtt_ep::packet::Qos::AtMostOnce {
                             // Acquire packet ID for QoS > 0
                             let packet_id = endpoint.acquire_packet_id().await.unwrap_or(1);
                             builder = builder.packet_id(packet_id);
-                            builder.build().expect("Failed to build PUBLISH")
+                            let pub_packet = builder.build().expect("Failed to build PUBLISH");
+                            (pub_packet, Some(packet_id))
                         } else {
-                            builder.build().expect("Failed to build PUBLISH")
+                            (builder.build().expect("Failed to build PUBLISH"), None)
                         };
 
                         if let Err(e) = endpoint.send(publish).await {
                             debug!(
                                 "Failed to send PUBLISH to session {:?}: {e}",
                                 self.session_id
+                            );
+                        } else if let Some(packet_id) = packet_id_opt {
+                            // Track outgoing PUBLISH for QoS 1/2
+                            self.outgoing_publishes.insert(
+                                packet_id,
+                                OutgoingPublishInfo {
+                                    sent_at: std::time::Instant::now(),
+                                    message_expiry_interval,
+                                },
                             );
                         }
                     }

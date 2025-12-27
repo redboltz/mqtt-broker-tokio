@@ -240,11 +240,25 @@ impl BrokerManager {
                 let retained_messages = retained_store.get_matching(topic_filter).await;
 
                 for retained_msg in retained_messages {
+                    // Check MessageExpiryInterval and update props
+                    let (updated_props, is_expired) = BrokerManager::update_message_expiry_interval(
+                        &retained_msg.props,
+                        retained_msg.stored_at,
+                    );
+
+                    if is_expired {
+                        trace!(
+                            "Retained message for topic '{}' has expired, skipping delivery",
+                            retained_msg.topic_name
+                        );
+                        continue;
+                    }
+
                     // QoS arbitration
                     let effective_qos = retained_msg.qos.min(*sub_qos);
 
                     // Prepare properties
-                    let mut msg_props = retained_msg.props.clone();
+                    let mut msg_props = updated_props;
                     if let Some(id) = sub_id {
                         msg_props.push(mqtt_ep::packet::Property::SubscriptionIdentifier(
                             mqtt_ep::packet::SubscriptionIdentifier::new(id).unwrap(),

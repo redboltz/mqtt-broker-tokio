@@ -715,6 +715,18 @@ impl BrokerManager {
                 return None;
             }
 
+            // Clean up expired outgoing PUBLISHes before sending offline messages
+            if let Some(session_arc) = session_store.get_session(&session_id).await {
+                let mut session_guard = session_arc.write().await;
+                let expired_count = session_guard
+                    .cleanup_expired_outgoing_publishes()
+                    .await
+                    .len();
+                if expired_count > 0 {
+                    debug!("Cleaned up {expired_count} expired outgoing PUBLISHes for {client_id}");
+                }
+            }
+
             // Send offline messages
             Self::send_offline_messages(&endpoint_arc, &client_id, offline_messages).await;
 
@@ -1195,14 +1207,24 @@ impl BrokerManager {
             }
             mqtt_ep::packet::Packet::V3_1_1Puback(_puback) => {
                 // QoS 1: Received PUBACK (client acknowledged our publish)
+                // v3.1.1 has no MessageExpiryInterval - no tracking
                 trace!("Received PUBACK from client {client_id}");
             }
-            mqtt_ep::packet::Packet::V5_0Puback(_puback) => {
+            mqtt_ep::packet::Packet::V5_0Puback(puback) => {
                 // QoS 1: Received PUBACK (client acknowledged our publish)
-                trace!("Received PUBACK from client {client_id}");
+                let packet_id = puback.packet_id();
+                trace!("Received PUBACK from client {client_id}, packet_id={packet_id}");
+
+                // Remove outgoing PUBLISH tracking (v5.0 only)
+                if let Some(session_arc) = session_store.get_session(&session_ref.session_id).await
+                {
+                    let mut session_guard = session_arc.write().await;
+                    session_guard.remove_outgoing_publish(packet_id);
+                }
             }
             mqtt_ep::packet::Packet::V3_1_1Pubrec(pubrec) => {
                 // QoS 2: Received PUBREC, send PUBREL
+                // v3.1.1 has no MessageExpiryInterval - no tracking
                 Self::send_pubrel(
                     endpoint,
                     pubrec.packet_id(),
@@ -1213,9 +1235,20 @@ impl BrokerManager {
             }
             mqtt_ep::packet::Packet::V5_0Pubrec(pubrec) => {
                 // QoS 2: Received PUBREC, send PUBREL
+                let packet_id = pubrec.packet_id();
+                trace!("Received PUBREC from client {client_id}, packet_id={packet_id}");
+
+                // Remove outgoing PUBLISH tracking (v5.0 only)
+                // At this point, stored_packet changes from Publish to Pubrel
+                if let Some(session_arc) = session_store.get_session(&session_ref.session_id).await
+                {
+                    let mut session_guard = session_arc.write().await;
+                    session_guard.remove_outgoing_publish(packet_id);
+                }
+
                 Self::send_pubrel(
                     endpoint,
-                    pubrec.packet_id(),
+                    packet_id,
                     mqtt_ep::result_code::PubrelReasonCode::Success,
                     Vec::new(),
                 )
@@ -1244,10 +1277,12 @@ impl BrokerManager {
             mqtt_ep::packet::Packet::V3_1_1Pubcomp(_pubcomp) => {
                 // QoS 2: Received PUBCOMP (client acknowledged our PUBREL)
                 trace!("Received PUBCOMP from client {client_id}");
+                // Tracking already removed at PUBREC stage
             }
             mqtt_ep::packet::Packet::V5_0Pubcomp(_pubcomp) => {
                 // QoS 2: Received PUBCOMP (client acknowledged our PUBREL)
                 trace!("Received PUBCOMP from client {client_id}");
+                // Tracking already removed at PUBREC stage
             }
             mqtt_ep::packet::Packet::V3_1_1Pingreq(_) => {
                 Self::send_pingresp(client_id, endpoint).await?;
@@ -1491,6 +1526,18 @@ impl BrokerManager {
         );
 
         for msg in offline_messages {
+            // Check MessageExpiryInterval and update props
+            let (updated_props, is_expired) =
+                Self::update_message_expiry_interval(&msg.props, msg.stored_at);
+
+            if is_expired {
+                trace!(
+                    "Offline message for topic '{}' has expired, skipping",
+                    msg.topic_name
+                );
+                continue; // Skip expired message (no PacketId acquired, nothing to release)
+            }
+
             // Acquire packet ID for QoS > 0
             let packet_id = if msg.qos != mqtt_ep::packet::Qos::AtMostOnce {
                 match endpoint.acquire_packet_id_when_available().await {
@@ -1534,8 +1581,8 @@ impl BrokerManager {
                         .retain(msg.retain)
                         .payload(msg.payload.clone());
 
-                    if !msg.props.is_empty() {
-                        builder = builder.props(msg.props.clone());
+                    if !updated_props.is_empty() {
+                        builder = builder.props(updated_props.clone());
                     }
 
                     if msg.qos != mqtt_ep::packet::Qos::AtMostOnce {

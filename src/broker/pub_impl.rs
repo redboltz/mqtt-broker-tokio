@@ -612,7 +612,8 @@ impl BrokerManager {
         use crate::auth_impl::AuthorizationType;
 
         // Check MessageExpiryInterval and update props
-        let (updated_props, is_expired) = Self::update_message_expiry_interval(&props, registered_at);
+        let (updated_props, is_expired) =
+            Self::update_message_expiry_interval(&props, registered_at);
 
         if is_expired {
             trace!("Will message for topic '{topic}' has expired, not publishing");
@@ -751,7 +752,8 @@ impl BrokerManager {
                     // Update interval
                     let new_interval = original_interval - elapsed_secs as u32;
                     if let Ok(new_mei) = mqtt_ep::packet::MessageExpiryInterval::new(new_interval) {
-                        updated_props.push(mqtt_ep::packet::Property::MessageExpiryInterval(new_mei));
+                        updated_props
+                            .push(mqtt_ep::packet::Property::MessageExpiryInterval(new_mei));
                     }
                 }
             } else {
