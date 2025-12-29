@@ -84,6 +84,13 @@ pub struct WillMessage {
     pub registered_at: std::time::Instant, // Time when Will was registered (CONNECT time)
 }
 
+/// Will message entry with Arc and timer management
+#[derive(Debug)]
+struct WillMessageEntry {
+    message: Arc<WillMessage>,
+    expiry_timer: Option<tokio::task::JoinHandle<()>>,
+}
+
 /// Outgoing PUBLISH tracking for MessageExpiryInterval timeout management
 #[derive(Debug)]
 struct OutgoingPublishInfo {
@@ -118,7 +125,7 @@ pub struct Session {
     response_topic: Option<String>,
 
     /// Will message (Last Will and Testament)
-    will_message: Option<WillMessage>,
+    will_message: Option<WillMessageEntry>,
 
     /// Will Delay Interval timer handle (MQTT v5.0)
     will_delay_timer: Option<tokio::task::JoinHandle<()>>,
@@ -171,12 +178,70 @@ impl Session {
 
     /// Get will message
     pub fn will_message(&self) -> Option<&WillMessage> {
-        self.will_message.as_ref()
+        self.will_message.as_ref().map(|entry| entry.message.as_ref())
     }
 
     /// Set will message
     pub fn set_will_message(&mut self, will: Option<WillMessage>) {
-        self.will_message = will;
+        // Cancel existing timer if any
+        if let Some(mut old_entry) = self.will_message.take() {
+            if let Some(timer) = old_entry.expiry_timer.take() {
+                timer.abort();
+            }
+        }
+
+        // Set new will message with timer
+        self.will_message = will.map(|message| {
+            // Extract MessageExpiryInterval from props
+            let message_expiry_interval = message.props.iter().find_map(|prop| {
+                if let mqtt_ep::packet::Property::MessageExpiryInterval(_) = prop {
+                    prop.as_u32()
+                } else {
+                    None
+                }
+            });
+
+            // Wrap message in Arc
+            let message_arc = Arc::new(message);
+
+            // Spawn expiry timer if MessageExpiryInterval is set
+            let expiry_timer = if let Some(expiry_interval) = message_expiry_interval {
+                if let Some(self_weak) = self.self_weak.clone() {
+                    let message_weak = Arc::downgrade(&message_arc);
+                    let session_id = self.session_id.clone();
+
+                    Some(tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(
+                            expiry_interval as u64,
+                        ))
+                        .await;
+
+                        trace!(
+                            "MessageExpiryInterval timer fired for will message, session={session_id}"
+                        );
+
+                        // Clear will message
+                        if let Some(session_arc) = self_weak.upgrade() {
+                            if message_weak.upgrade().is_some() {
+                                let mut session_guard = session_arc.write().await;
+                                session_guard.will_message = None;
+                                trace!("Removed expired will message for session={session_id}");
+                            }
+                        }
+                    }))
+                } else {
+                    trace!("self_weak not set, cannot spawn expiry timer for will message");
+                    None
+                }
+            } else {
+                None
+            };
+
+            WillMessageEntry {
+                message: message_arc,
+                expiry_timer,
+            }
+        });
     }
 
     /// Get session expiry interval
@@ -541,6 +606,12 @@ impl Drop for Session {
         // Clean up all offline message timers
         for (_, entry) in self.offline_messages.drain(..) {
             if let Some(timer) = entry.expiry_timer {
+                timer.abort();
+            }
+        }
+        // Clean up will message timer
+        if let Some(mut entry) = self.will_message.take() {
+            if let Some(timer) = entry.expiry_timer.take() {
                 timer.abort();
             }
         }

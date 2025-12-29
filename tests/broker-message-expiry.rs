@@ -1191,3 +1191,137 @@ async fn test_offline_message_timer_deletion_v5_0() {
         .await
         .expect("Failed to close subscriber");
 }
+
+/// Test will message expiry with timer-based deletion
+/// This tests Phase 3: timer-based deletion of will messages
+#[tokio::test]
+async fn test_will_message_timer_deletion_v5_0() {
+    let broker = BrokerProcess::start();
+    broker.wait_ready().await;
+
+    // Subscriber: Subscribe to Will topic
+    let subscriber_stream = mqtt_ep::transport::connect_helper::connect_tcp(
+        &format!("127.0.0.1:{}", broker.port()),
+        Some(Duration::from_secs(10)),
+    )
+    .await
+    .expect("Failed to connect subscriber");
+
+    let subscriber = mqtt_ep::Endpoint::<mqtt_ep::role::Client>::new(mqtt_ep::Version::V5_0);
+    let subscriber_transport = mqtt_ep::transport::TcpTransport::from_stream(subscriber_stream);
+
+    let opts = mqtt_ep::connection_option::ConnectionOption::builder()
+        .build()
+        .expect("Failed to build connection options");
+    subscriber
+        .attach_with_options(subscriber_transport, mqtt_ep::Mode::Client, opts)
+        .await
+        .expect("Failed to attach subscriber");
+
+    let connect = mqtt_ep::packet::v5_0::Connect::builder()
+        .client_id("subscriber_will_timer")
+        .expect("Failed to set client_id")
+        .clean_start(true)
+        .build()
+        .expect("Failed to build CONNECT");
+
+    subscriber
+        .send(connect)
+        .await
+        .expect("Failed to send CONNECT");
+
+    let _connack = subscriber.recv().await.expect("Failed to receive CONNACK");
+
+    // Subscribe to will topic
+    let packet_id = subscriber
+        .acquire_packet_id()
+        .await
+        .expect("Failed to acquire packet_id");
+    let sub_opts = mqtt_ep::packet::SubOpts::new().set_qos(mqtt_ep::packet::Qos::AtMostOnce);
+    let sub_entry = mqtt_ep::packet::SubEntry::new("test/will/timer", sub_opts)
+        .expect("Failed to create SubEntry");
+
+    let subscribe = mqtt_ep::packet::v5_0::Subscribe::builder()
+        .packet_id(packet_id)
+        .entries(vec![sub_entry])
+        .build()
+        .expect("Failed to build SUBSCRIBE");
+
+    subscriber
+        .send(subscribe)
+        .await
+        .expect("Failed to send SUBSCRIBE");
+
+    let _suback = subscriber.recv().await.expect("Failed to receive SUBACK");
+
+    // Publisher with Will message (MessageExpiryInterval=1 second)
+    let publisher_stream = mqtt_ep::transport::connect_helper::connect_tcp(
+        &format!("127.0.0.1:{}", broker.port()),
+        Some(Duration::from_secs(10)),
+    )
+    .await
+    .expect("Failed to connect publisher");
+
+    let publisher = mqtt_ep::Endpoint::<mqtt_ep::role::Client>::new(mqtt_ep::Version::V5_0);
+    let publisher_transport = mqtt_ep::transport::TcpTransport::from_stream(publisher_stream);
+
+    let opts = mqtt_ep::connection_option::ConnectionOption::builder()
+        .build()
+        .expect("Failed to build connection options");
+    publisher
+        .attach_with_options(publisher_transport, mqtt_ep::Mode::Client, opts)
+        .await
+        .expect("Failed to attach publisher");
+
+    // Create CONNECT with Will message (MessageExpiryInterval=1 second)
+    let mei = mqtt_ep::packet::MessageExpiryInterval::new(1).unwrap();
+    let connect = mqtt_ep::packet::v5_0::Connect::builder()
+        .client_id("publisher_will_timer")
+        .expect("Failed to set client_id")
+        .clean_start(true)
+        .will_message(
+            "test/will/timer",
+            b"will message with timer",
+            mqtt_ep::packet::Qos::AtMostOnce,
+            false,
+        )
+        .expect("Failed to set will_message")
+        .will_props(vec![mqtt_ep::packet::Property::MessageExpiryInterval(mei)])
+        .build()
+        .expect("Failed to build CONNECT");
+
+    publisher
+        .send(connect)
+        .await
+        .expect("Failed to send CONNECT");
+
+    let _connack = publisher.recv().await.expect("Failed to receive CONNACK");
+
+    // Wait 3 seconds for the timer to fire and delete the Will message
+    println!("⏳ Waiting 3 seconds for MessageExpiryInterval timer to fire...");
+    sleep(Duration::from_secs(3)).await;
+
+    // Now disconnect publisher abnormally (the Will message should have been deleted by timer)
+    println!("💥 Disconnecting publisher abnormally (Will message should be deleted by timer)");
+    drop(publisher);
+
+    // Wait a bit for Will message processing
+    sleep(Duration::from_millis(500)).await;
+
+    // Subscriber should NOT receive the Will message (deleted by timer)
+    tokio::select! {
+        result = subscriber.recv() => {
+            if let Ok(packet) = result {
+                panic!("Received expired Will message that should have been deleted by timer: {packet:?}");
+            }
+        }
+        _ = sleep(Duration::from_millis(500)) => {
+            println!("✅ Timer-based deletion worked: expired Will message was not delivered");
+        }
+    }
+
+    subscriber
+        .close()
+        .await
+        .expect("Failed to close subscriber");
+}
