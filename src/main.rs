@@ -124,6 +124,22 @@ struct Args {
     /// Path to authentication/authorization configuration file (JSON5 format with comments support)
     #[arg(long, default_value = "auth.json")]
     auth_file: String,
+
+    /// Enable retain message support (MQTT v5.0 Retain Available)
+    #[arg(long, default_value = "true")]
+    retain_support: bool,
+
+    /// Enable shared subscription support (MQTT v5.0 Shared Subscription Available)
+    #[arg(long, default_value = "true")]
+    shared_sub_support: bool,
+
+    /// Enable subscription identifier support (MQTT v5.0 Subscription Identifier Available)
+    #[arg(long, default_value = "true")]
+    sub_id_support: bool,
+
+    /// Enable wildcard subscription support (MQTT v5.0 Wildcard Subscription Available)
+    #[arg(long, default_value = "true")]
+    wc_support: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -401,7 +417,15 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
         match Security::load_json(&args.auth_file) {
             Ok(security) => {
                 info!("Authentication/authorization configuration loaded successfully");
-                BrokerManager::new_with_security(args.ep_recv_buf_size, security).await?
+                BrokerManager::new_with_security(
+                    args.ep_recv_buf_size,
+                    args.retain_support,
+                    args.shared_sub_support,
+                    args.sub_id_support,
+                    args.wc_support,
+                    security,
+                )
+                .await?
             }
             Err(e) => {
                 return Err(anyhow::anyhow!(
@@ -416,7 +440,14 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
             "Authentication/authorization file '{}' not found. Running without authentication/authorization.",
             args.auth_file
         );
-        BrokerManager::new(args.ep_recv_buf_size).await?
+        BrokerManager::new(
+            args.ep_recv_buf_size,
+            args.retain_support,
+            args.shared_sub_support,
+            args.sub_id_support,
+            args.wc_support,
+        )
+        .await?
     };
 
     let mut tasks = Vec::new();

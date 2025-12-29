@@ -76,11 +76,23 @@ pub struct BrokerManager {
 
     /// Endpoint receive buffer size
     ep_recv_buf_size: Option<usize>,
+
+    /// Feature support flags
+    retain_support: bool,
+    shared_sub_support: bool,
+    sub_id_support: bool,
+    wc_support: bool,
 }
 
 impl BrokerManager {
     /// Create a new broker manager
-    pub async fn new(ep_recv_buf_size: Option<usize>) -> anyhow::Result<Self> {
+    pub async fn new(
+        ep_recv_buf_size: Option<usize>,
+        retain_support: bool,
+        shared_sub_support: bool,
+        sub_id_support: bool,
+        wc_support: bool,
+    ) -> anyhow::Result<Self> {
         let subscription_store = Arc::new(SubscriptionStore::new());
         let retained_store = Arc::new(RetainedStore::new());
         let session_store = Arc::new(SessionStore::new());
@@ -99,12 +111,20 @@ impl BrokerManager {
             security: None,
             subscription_tx,
             ep_recv_buf_size,
+            retain_support,
+            shared_sub_support,
+            sub_id_support,
+            wc_support,
         })
     }
 
     /// Create a new broker manager with security
     pub async fn new_with_security(
         ep_recv_buf_size: Option<usize>,
+        retain_support: bool,
+        shared_sub_support: bool,
+        sub_id_support: bool,
+        wc_support: bool,
         security: Security,
     ) -> anyhow::Result<Self> {
         let subscription_store = Arc::new(SubscriptionStore::new());
@@ -125,6 +145,10 @@ impl BrokerManager {
             security: Some(Arc::new(security)),
             subscription_tx,
             ep_recv_buf_size,
+            retain_support,
+            shared_sub_support,
+            sub_id_support,
+            wc_support,
         })
     }
 
@@ -176,7 +200,7 @@ impl BrokerManager {
 
         tokio::spawn(async move {
             // Handle client endpoint
-            let result = Self::handle_client_endpoint(
+            let result = broker_manager_for_cleanup.handle_client_endpoint(
                 endpoint,
                 subscription_store_for_endpoint,
                 retained_store_for_endpoint,
@@ -298,6 +322,7 @@ impl BrokerManager {
 
     /// Handle client endpoint in dedicated task
     async fn handle_client_endpoint(
+        &self,
         endpoint: mqtt_ep::Endpoint<mqtt_ep::role::Server>,
         subscription_store: Arc<SubscriptionStore>,
         retained_store: Arc<RetainedStore>,
@@ -703,13 +728,14 @@ impl BrokerManager {
             };
 
             // Send CONNACK with session_present=true
-            if let Err(e) = Self::send_connack_for_restore(
-                &endpoint_arc,
-                &client_id,
-                session_expiry_interval,
-                response_topic.as_deref(),
-            )
-            .await
+            if let Err(e) = self
+                .send_connack_for_restore(
+                    &endpoint_arc,
+                    &client_id,
+                    session_expiry_interval,
+                    response_topic.as_deref(),
+                )
+                .await
             {
                 error!("Failed to send CONNACK for {client_id}: {e}");
                 return None;
@@ -756,14 +782,15 @@ impl BrokerManager {
             trace!("Creating new session for client {client_id}");
 
             // Send CONNACK with session_present=false
-            if let Err(e) = Self::send_connack_for_new(
-                &endpoint_arc,
-                &client_id,
-                session_expiry_interval,
-                assigned_client_id.as_deref(),
-                response_topic.as_deref(),
-            )
-            .await
+            if let Err(e) = self
+                .send_connack_for_new(
+                    &endpoint_arc,
+                    &client_id,
+                    session_expiry_interval,
+                    assigned_client_id.as_deref(),
+                    response_topic.as_deref(),
+                )
+                .await
             {
                 error!("Failed to send CONNACK for {client_id}: {e}");
                 return None;
@@ -848,7 +875,7 @@ impl BrokerManager {
                         }
                         _ => {
                             // Handle other packets
-                            if let Err(e) = Self::handle_received_packet_in_endpoint(
+                            if let Err(e) = self.handle_received_packet_in_endpoint(
                                 &client_id,
                                 &packet,
                                 &subscription_store,
@@ -1075,6 +1102,7 @@ impl BrokerManager {
     /// Handle received packet in endpoint task (direct processing)
     #[allow(clippy::too_many_arguments)]
     async fn handle_received_packet_in_endpoint(
+        &self,
         client_id: &str,
         packet: &mqtt_ep::packet::Packet,
         subscription_store: &Arc<SubscriptionStore>,
@@ -1087,7 +1115,7 @@ impl BrokerManager {
     ) -> anyhow::Result<()> {
         match packet {
             mqtt_ep::packet::Packet::V3_1_1Subscribe(sub) => {
-                Self::handle_subscribe(
+                self.handle_subscribe(
                     sub.packet_id(),
                     sub.entries(),
                     Vec::new(),
@@ -1102,7 +1130,7 @@ impl BrokerManager {
                 .await?;
             }
             mqtt_ep::packet::Packet::V5_0Subscribe(sub) => {
-                Self::handle_subscribe(
+                self.handle_subscribe(
                     sub.packet_id(),
                     sub.entries(),
                     sub.props().to_vec(),
@@ -1137,7 +1165,7 @@ impl BrokerManager {
                 .await?;
             }
             mqtt_ep::packet::Packet::V3_1_1Publish(pub_packet) => {
-                Self::handle_publish(
+                self.handle_publish(
                     endpoint,
                     pub_packet.packet_id().unwrap_or(0),
                     pub_packet.topic_name(),
@@ -1176,7 +1204,7 @@ impl BrokerManager {
                     ));
                 }
 
-                Self::handle_publish(
+                self.handle_publish(
                     endpoint,
                     pub_packet.packet_id().unwrap_or(0),
                     pub_packet.topic_name(),
@@ -1328,6 +1356,7 @@ impl BrokerManager {
 
     /// Send CONNACK for session restoration (session_present=true)
     async fn send_connack_for_restore(
+        &self,
         endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
         client_id: &str,
         _session_expiry_interval: u32,
@@ -1353,6 +1382,9 @@ impl BrokerManager {
                     .session_present(true)
                     .reason_code(mqtt_ep::result_code::ConnectReasonCode::Success);
 
+                // Build properties list
+                let mut props = Vec::new();
+
                 // Add Response Information property if provided
                 if let Some(response_info) = response_information {
                     trace!(
@@ -1360,8 +1392,7 @@ impl BrokerManager {
                     );
                     match mqtt_ep::packet::ResponseInformation::new(response_info) {
                         Ok(ri) => {
-                            let prop = mqtt_ep::packet::Property::ResponseInformation(ri);
-                            builder = builder.props(vec![prop]);
+                            props.push(mqtt_ep::packet::Property::ResponseInformation(ri));
                             trace!("Adding Response Information to CONNACK: {response_info}");
                         }
                         Err(e) => {
@@ -1370,6 +1401,32 @@ impl BrokerManager {
                             );
                         }
                     }
+                }
+
+                // Add feature support properties
+                if !self.retain_support {
+                    props.push(mqtt_ep::packet::Property::RetainAvailable(
+                        mqtt_ep::packet::RetainAvailable::new(0).unwrap(),
+                    ));
+                }
+                if !self.shared_sub_support {
+                    props.push(mqtt_ep::packet::Property::SharedSubscriptionAvailable(
+                        mqtt_ep::packet::SharedSubscriptionAvailable::new(0).unwrap(),
+                    ));
+                }
+                if !self.sub_id_support {
+                    props.push(mqtt_ep::packet::Property::SubscriptionIdentifierAvailable(
+                        mqtt_ep::packet::SubscriptionIdentifierAvailable::new(0).unwrap(),
+                    ));
+                }
+                if !self.wc_support {
+                    props.push(mqtt_ep::packet::Property::WildcardSubscriptionAvailable(
+                        mqtt_ep::packet::WildcardSubscriptionAvailable::new(0).unwrap(),
+                    ));
+                }
+
+                if !props.is_empty() {
+                    builder = builder.props(props);
                 }
 
                 let connack = builder.build().unwrap();
@@ -1387,6 +1444,7 @@ impl BrokerManager {
 
     /// Send CONNACK for new session (session_present=false)
     async fn send_connack_for_new(
+        &self,
         endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
         client_id: &str,
         _session_expiry_interval: u32,
@@ -1441,6 +1499,28 @@ impl BrokerManager {
                             );
                         }
                     }
+                }
+
+                // Add feature support properties
+                if !self.retain_support {
+                    props.push(mqtt_ep::packet::Property::RetainAvailable(
+                        mqtt_ep::packet::RetainAvailable::new(0).unwrap(),
+                    ));
+                }
+                if !self.shared_sub_support {
+                    props.push(mqtt_ep::packet::Property::SharedSubscriptionAvailable(
+                        mqtt_ep::packet::SharedSubscriptionAvailable::new(0).unwrap(),
+                    ));
+                }
+                if !self.sub_id_support {
+                    props.push(mqtt_ep::packet::Property::SubscriptionIdentifierAvailable(
+                        mqtt_ep::packet::SubscriptionIdentifierAvailable::new(0).unwrap(),
+                    ));
+                }
+                if !self.wc_support {
+                    props.push(mqtt_ep::packet::Property::WildcardSubscriptionAvailable(
+                        mqtt_ep::packet::WildcardSubscriptionAvailable::new(0).unwrap(),
+                    ));
                 }
 
                 if !props.is_empty() {

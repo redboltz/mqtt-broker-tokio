@@ -252,6 +252,7 @@ impl BrokerManager {
     /// Handle PUBLISH packet (unified for both v3.1.1 and v5.0)
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn handle_publish(
+        &self,
         endpoint: &Arc<mqtt_ep::Endpoint<mqtt_ep::role::Server>>,
         packet_id: u16,
         topic: &str,
@@ -268,6 +269,46 @@ impl BrokerManager {
     ) -> anyhow::Result<()> {
         use crate::auth_impl::AuthorizationType;
         use tracing::error;
+
+        // Check retain support (MQTT v5.0)
+        if retain && !self.retain_support {
+            let endpoint_version = endpoint
+                .get_protocol_version()
+                .await
+                .unwrap_or(mqtt_ep::Version::V5_0);
+
+            if endpoint_version == mqtt_ep::Version::V5_0 {
+                error!("Retain not supported but client tried to use retain flag");
+                // Send error response based on QoS
+                match qos {
+                    mqtt_ep::packet::Qos::AtMostOnce => {
+                        // QoS 0: Disconnect client
+                        let _ = endpoint.close().await;
+                    }
+                    mqtt_ep::packet::Qos::AtLeastOnce => {
+                        // QoS 1: Send PUBACK with ImplementationSpecificError (Retain not supported)
+                        let _ = Self::send_puback(
+                            endpoint,
+                            packet_id,
+                            mqtt_ep::result_code::PubackReasonCode::ImplementationSpecificError,
+                            Vec::new(),
+                        )
+                        .await;
+                    }
+                    mqtt_ep::packet::Qos::ExactlyOnce => {
+                        // QoS 2: Send PUBREC with ImplementationSpecificError (Retain not supported)
+                        let _ = Self::send_pubrec(
+                            endpoint,
+                            packet_id,
+                            mqtt_ep::result_code::PubrecReasonCode::ImplementationSpecificError,
+                            Vec::new(),
+                        )
+                        .await;
+                    }
+                }
+                return Ok(());
+            }
+        }
 
         // Check PUBLISH authorization if security is configured
         // Special case: Response Topics are always allowed for publishing (any user)
