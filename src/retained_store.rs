@@ -21,6 +21,7 @@
 // SOFTWARE.
 
 use mqtt_endpoint_tokio::mqtt_ep;
+use mqtt_endpoint_tokio::mqtt_ep::prelude::PropertyValueAccess;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -36,17 +37,24 @@ pub struct RetainedMessage {
     pub stored_at: std::time::Instant, // Time when message was stored
 }
 
+/// Retained message entry with Arc and timer management
+#[derive(Debug)]
+struct RetainedMessageEntry {
+    message: Arc<RetainedMessage>,
+    expiry_timer: Option<tokio::task::JoinHandle<()>>,
+}
+
 /// Trie node for retained messages (simpler than subscription trie)
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 struct RetainedTrieNode {
     /// Retained message at this exact topic name (if any)
-    message: Option<RetainedMessage>,
+    message: Option<RetainedMessageEntry>,
     /// Child nodes for each segment
     children: HashMap<String, RetainedTrieNode>,
 }
 
 /// Retained message store using Trie-based structure for efficient wildcard matching
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct RetainedStore {
     /// Root of the trie structure
     root: Arc<RwLock<RetainedTrieNode>>,
@@ -69,16 +77,73 @@ impl RetainedStore {
         payload: mqtt_ep::common::ArcPayload,
         props: Vec<mqtt_ep::packet::Property>,
     ) {
-        let mut root = self.root.write().await;
-        let segments: Vec<&str> = topic_name.split('/').collect();
+        // Extract MessageExpiryInterval from props
+        let message_expiry_interval = props.iter().find_map(|prop| {
+            if let mqtt_ep::packet::Property::MessageExpiryInterval(_) = prop {
+                prop.as_u32()
+            } else {
+                None
+            }
+        });
 
-        let node = Self::get_or_create_node(&mut root, &segments, 0);
-        node.message = Some(RetainedMessage {
+        // Create retained message
+        let message = RetainedMessage {
             topic_name: topic_name.to_string(),
             qos,
             payload,
             props,
             stored_at: std::time::Instant::now(),
+        };
+
+        let message_arc = Arc::new(message);
+
+        // Spawn expiry timer if MessageExpiryInterval is set
+        let expiry_timer = if let Some(expiry_interval) = message_expiry_interval {
+            let root_weak = Arc::downgrade(&self.root);
+            let message_weak = Arc::downgrade(&message_arc);
+            let topic_name_owned = topic_name.to_string();
+
+            Some(tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(expiry_interval as u64))
+                    .await;
+
+                trace!(
+                    "MessageExpiryInterval timer fired for retained message, topic={topic_name_owned}"
+                );
+
+                // Remove retained message
+                if let Some(root_arc) = root_weak.upgrade() {
+                    if message_weak.upgrade().is_some() {
+                        let mut root_guard = root_arc.write().await;
+                        let segments: Vec<&str> = topic_name_owned.split('/').collect();
+
+                        if let Some(node) = Self::find_node_mut(&mut root_guard, &segments, 0) {
+                            node.message = None;
+                            trace!("Removed expired retained message for topic '{topic_name_owned}'");
+                        }
+                    }
+                }
+            }))
+        } else {
+            None
+        };
+
+        // Store in trie
+        let mut root = self.root.write().await;
+        let segments: Vec<&str> = topic_name.split('/').collect();
+
+        let node = Self::get_or_create_node(&mut root, &segments, 0);
+
+        // Cancel existing timer if any
+        if let Some(mut old_entry) = node.message.take() {
+            if let Some(timer) = old_entry.expiry_timer.take() {
+                timer.abort();
+            }
+        }
+
+        node.message = Some(RetainedMessageEntry {
+            message: message_arc,
+            expiry_timer,
         });
 
         trace!("Stored retained message for topic '{topic_name}' with QoS {qos:?}");
@@ -90,7 +155,12 @@ impl RetainedStore {
         let segments: Vec<&str> = topic_name.split('/').collect();
 
         if let Some(node) = Self::find_node_mut(&mut root, &segments, 0) {
-            node.message = None;
+            // Cancel timer if any
+            if let Some(mut old_entry) = node.message.take() {
+                if let Some(timer) = old_entry.expiry_timer.take() {
+                    timer.abort();
+                }
+            }
             trace!("Removed retained message for topic '{topic_name}'");
         }
     }
@@ -181,8 +251,8 @@ impl RetainedStore {
     /// Recursively collect all retained messages under a node
     fn collect_all_messages(node: &RetainedTrieNode, results: &mut Vec<RetainedMessage>) {
         // Add message at this node if present
-        if let Some(ref message) = node.message {
-            results.push(message.clone());
+        if let Some(ref entry) = node.message {
+            results.push((*entry.message).clone());
         }
 
         // Recursively collect from all children
