@@ -20,10 +20,11 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+use indexmap::IndexMap;
 use mqtt_endpoint_tokio::mqtt_ep;
 use mqtt_endpoint_tokio::mqtt_ep::prelude::PropertyValueAccess;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use tokio::sync::RwLock;
 use tracing::{debug, trace};
 
@@ -61,7 +62,14 @@ pub struct OfflineMessage {
     pub retain: bool,
     pub payload: mqtt_ep::common::ArcPayload,
     pub props: Vec<mqtt_ep::packet::Property>,
-    pub stored_at: std::time::Instant, // Time when message was stored
+    pub stored_at: std::time::Instant, // For MessageExpiryInterval update on delivery
+}
+
+/// Offline message entry with Arc and timer management
+#[derive(Debug)]
+struct OfflineMessageEntry {
+    message: Arc<OfflineMessage>,
+    expiry_timer: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// Will message (Last Will and Testament)
@@ -76,11 +84,17 @@ pub struct WillMessage {
     pub registered_at: std::time::Instant, // Time when Will was registered (CONNECT time)
 }
 
+/// Will message entry with Arc and timer management
+#[derive(Debug)]
+struct WillMessageEntry {
+    message: Arc<WillMessage>,
+    expiry_timer: Option<tokio::task::JoinHandle<()>>,
+}
+
 /// Outgoing PUBLISH tracking for MessageExpiryInterval timeout management
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct OutgoingPublishInfo {
-    sent_at: std::time::Instant,
-    message_expiry_interval: Option<u32>, // None if no expiry
+    expiry_timer: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// Session state
@@ -94,8 +108,8 @@ pub struct Session {
     /// Whether the session is currently online
     online: bool,
 
-    /// Offline messages (QoS1/QoS2 only)
-    offline_messages: Vec<OfflineMessage>,
+    /// Offline messages (QoS1/QoS2 only) - key is Arc::as_ptr() address
+    offline_messages: IndexMap<usize, OfflineMessageEntry>,
 
     /// Session expiry interval in seconds (0 means delete on disconnect)
     session_expiry_interval: u32,
@@ -111,13 +125,16 @@ pub struct Session {
     response_topic: Option<String>,
 
     /// Will message (Last Will and Testament)
-    will_message: Option<WillMessage>,
+    will_message: Option<WillMessageEntry>,
 
     /// Will Delay Interval timer handle (MQTT v5.0)
     will_delay_timer: Option<tokio::task::JoinHandle<()>>,
 
     /// Outgoing PUBLISH tracking for MessageExpiryInterval timeout (PacketId -> Info)
     outgoing_publishes: HashMap<u16, OutgoingPublishInfo>,
+
+    /// Weak reference to self (for timer callbacks)
+    self_weak: Option<Weak<RwLock<Session>>>,
 }
 
 impl Session {
@@ -132,7 +149,7 @@ impl Session {
             session_id,
             endpoint: Some(endpoint),
             online: true, // New session starts as online
-            offline_messages: Vec::new(),
+            offline_messages: IndexMap::new(),
             session_expiry_interval,
             expiry_timer: None,
             need_keep,
@@ -140,7 +157,13 @@ impl Session {
             will_message: None,
             will_delay_timer: None,
             outgoing_publishes: HashMap::new(),
+            self_weak: None,
         }
+    }
+
+    /// Set weak reference to self (must be called after wrapping in Arc<RwLock<>>)
+    pub fn set_self_reference(&mut self, weak: Weak<RwLock<Session>>) {
+        self.self_weak = Some(weak);
     }
 
     /// Get response topic
@@ -155,12 +178,72 @@ impl Session {
 
     /// Get will message
     pub fn will_message(&self) -> Option<&WillMessage> {
-        self.will_message.as_ref()
+        self.will_message
+            .as_ref()
+            .map(|entry| entry.message.as_ref())
     }
 
     /// Set will message
     pub fn set_will_message(&mut self, will: Option<WillMessage>) {
-        self.will_message = will;
+        // Cancel existing timer if any
+        if let Some(mut old_entry) = self.will_message.take() {
+            if let Some(timer) = old_entry.expiry_timer.take() {
+                timer.abort();
+            }
+        }
+
+        // Set new will message with timer
+        self.will_message = will.map(|message| {
+            // Extract MessageExpiryInterval from props
+            let message_expiry_interval = message.props.iter().find_map(|prop| {
+                if let mqtt_ep::packet::Property::MessageExpiryInterval(_) = prop {
+                    prop.as_u32()
+                } else {
+                    None
+                }
+            });
+
+            // Wrap message in Arc
+            let message_arc = Arc::new(message);
+
+            // Spawn expiry timer if MessageExpiryInterval is set
+            let expiry_timer = if let Some(expiry_interval) = message_expiry_interval {
+                if let Some(self_weak) = self.self_weak.clone() {
+                    let message_weak = Arc::downgrade(&message_arc);
+                    let session_id = self.session_id.clone();
+
+                    Some(tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(
+                            expiry_interval as u64,
+                        ))
+                        .await;
+
+                        trace!(
+                            "MessageExpiryInterval timer fired for will message, session={session_id}"
+                        );
+
+                        // Clear will message
+                        if let Some(session_arc) = self_weak.upgrade() {
+                            if message_weak.upgrade().is_some() {
+                                let mut session_guard = session_arc.write().await;
+                                session_guard.will_message = None;
+                                trace!("Removed expired will message for session={session_id}");
+                            }
+                        }
+                    }))
+                } else {
+                    trace!("self_weak not set, cannot spawn expiry timer for will message");
+                    None
+                }
+            } else {
+                None
+            };
+
+            WillMessageEntry {
+                message: message_arc,
+                expiry_timer,
+            }
+        });
     }
 
     /// Get session expiry interval
@@ -215,66 +298,99 @@ impl Session {
     /// Add offline message
     pub fn add_offline_message(&mut self, message: OfflineMessage) {
         // Only store QoS1/QoS2 messages
-        if matches!(
+        if !matches!(
             message.qos,
             mqtt_ep::packet::Qos::AtLeastOnce | mqtt_ep::packet::Qos::ExactlyOnce
         ) {
-            self.offline_messages.push(message);
-            trace!(
-                "Added offline message for session {:?}, total: {}",
-                self.session_id,
-                self.offline_messages.len()
-            );
+            return;
         }
+
+        // Extract MessageExpiryInterval from props
+        let message_expiry_interval = message.props.iter().find_map(|prop| {
+            if let mqtt_ep::packet::Property::MessageExpiryInterval(_) = prop {
+                prop.as_u32()
+            } else {
+                None
+            }
+        });
+
+        // Wrap message in Arc
+        let message_arc = Arc::new(message);
+        let key = Arc::as_ptr(&message_arc) as usize;
+
+        // Spawn expiry timer if MessageExpiryInterval is set
+        let expiry_timer = if let Some(expiry_interval) = message_expiry_interval {
+            if let Some(self_weak) = self.self_weak.clone() {
+                let message_weak = Arc::downgrade(&message_arc);
+                let session_id = self.session_id.clone();
+
+                Some(tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(expiry_interval as u64))
+                        .await;
+
+                    trace!(
+                        "MessageExpiryInterval timer fired for offline message, session={session_id}"
+                    );
+
+                    // Remove from offline_messages map using the message pointer as key
+                    if let Some(session_arc) = self_weak.upgrade() {
+                        if let Some(message_arc) = message_weak.upgrade() {
+                            let key = Arc::as_ptr(&message_arc) as usize;
+                            let mut session_guard = session_arc.write().await;
+                            session_guard.offline_messages.shift_remove(&key);
+                            trace!("Removed expired offline message for session={session_id}");
+                        }
+                    }
+                }))
+            } else {
+                trace!("self_weak not set, cannot spawn expiry timer for offline message");
+                None
+            }
+        } else {
+            None
+        };
+
+        // Store in IndexMap
+        self.offline_messages.insert(
+            key,
+            OfflineMessageEntry {
+                message: message_arc,
+                expiry_timer,
+            },
+        );
+
+        trace!(
+            "Added offline message for session {:?}, total: {}",
+            self.session_id,
+            self.offline_messages.len()
+        );
     }
 
-    /// Take all offline messages
+    /// Take all offline messages (in insertion order)
     pub fn take_offline_messages(&mut self) -> Vec<OfflineMessage> {
-        std::mem::take(&mut self.offline_messages)
+        let entries = std::mem::take(&mut self.offline_messages);
+
+        entries
+            .into_iter()
+            .map(|(_key, mut entry)| {
+                // Cancel expiry timer
+                if let Some(timer) = entry.expiry_timer.take() {
+                    timer.abort();
+                }
+                // Unwrap Arc - this should succeed since we're the only owner after taking
+                Arc::try_unwrap(entry.message).unwrap_or_else(|arc| (*arc).clone())
+            })
+            .collect()
     }
 
     /// Remove outgoing PUBLISH tracking (called when ACK received)
     pub fn remove_outgoing_publish(&mut self, packet_id: u16) {
-        self.outgoing_publishes.remove(&packet_id);
-    }
-
-    /// Check and clean up expired outgoing PUBLISHes
-    /// Returns Vec of expired packet IDs that need to be released
-    pub async fn cleanup_expired_outgoing_publishes(&mut self) -> Vec<u16> {
-        let mut expired_packet_ids = Vec::new();
-
-        // Collect expired packet IDs
-        self.outgoing_publishes.retain(|&packet_id, info| {
-            if let Some(expiry_interval) = info.message_expiry_interval {
-                let elapsed_secs = info.sent_at.elapsed().as_secs();
-                if elapsed_secs >= expiry_interval as u64 {
-                    // Expired - collect packet_id for release
-                    expired_packet_ids.push(packet_id);
-                    trace!(
-                        "Outgoing PUBLISH packet_id={packet_id} expired (elapsed={elapsed_secs}s, expiry={expiry_interval}s)"
-                    );
-                    false // Remove from map
-                } else {
-                    true // Keep
-                }
-            } else {
-                true // No expiry - keep
-            }
-        });
-
-        // Release expired packet IDs
-        if let Some(endpoint) = &self.endpoint {
-            for packet_id in &expired_packet_ids {
-                if let Err(e) = endpoint.release_packet_id(*packet_id).await {
-                    debug!(
-                        "Failed to release expired packet_id={packet_id} for session {:?}: {e}",
-                        self.session_id
-                    );
-                }
+        if let Some(info) = self.outgoing_publishes.remove(&packet_id) {
+            // Cancel the expiry timer if it exists
+            if let Some(timer) = info.expiry_timer {
+                timer.abort();
             }
         }
-
-        expired_packet_ids
     }
 
     /// Set session expiry timer
@@ -390,14 +506,55 @@ impl Session {
                                 self.session_id
                             );
                         } else if let Some(packet_id) = packet_id_opt {
+                            // Spawn expiry timer if MessageExpiryInterval is set
+                            let expiry_timer = if let Some(expiry_interval) =
+                                message_expiry_interval
+                            {
+                                if let Some(self_weak) = self.self_weak.clone() {
+                                    let endpoint_weak = Arc::downgrade(endpoint);
+                                    let session_id = self.session_id.clone();
+
+                                    Some(tokio::spawn(async move {
+                                        tokio::time::sleep(std::time::Duration::from_secs(
+                                            expiry_interval as u64,
+                                        ))
+                                        .await;
+
+                                        trace!(
+                                            "MessageExpiryInterval timer fired for packet_id={packet_id}, session={session_id}"
+                                        );
+
+                                        // Erase stored packet from endpoint
+                                        if let Some(endpoint_arc) = endpoint_weak.upgrade() {
+                                            if let Err(e) =
+                                                endpoint_arc.erase_stored_publish(packet_id).await
+                                            {
+                                                debug!(
+                                                    "Failed to erase stored packet {packet_id}: {e}"
+                                                );
+                                            } else {
+                                                trace!("Erased stored packet {packet_id} due to MessageExpiryInterval expiry");
+                                            }
+                                        }
+
+                                        // Remove from outgoing_publishes map
+                                        if let Some(session_arc) = self_weak.upgrade() {
+                                            let mut session_guard = session_arc.write().await;
+                                            session_guard.outgoing_publishes.remove(&packet_id);
+                                            trace!("Removed outgoing_publishes entry for packet_id={packet_id}");
+                                        }
+                                    }))
+                                } else {
+                                    trace!("self_weak not set, cannot spawn expiry timer for packet_id={packet_id}");
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+
                             // Track outgoing PUBLISH for QoS 1/2
-                            self.outgoing_publishes.insert(
-                                packet_id,
-                                OutgoingPublishInfo {
-                                    sent_at: std::time::Instant::now(),
-                                    message_expiry_interval,
-                                },
-                            );
+                            self.outgoing_publishes
+                                .insert(packet_id, OutgoingPublishInfo { expiry_timer });
                         }
                     }
                     _ => {
@@ -435,6 +592,24 @@ impl Drop for Session {
         self.clear_expiry_timer();
         // Clean up will delay timer on drop
         self.clear_will_delay_timer();
+        // Clean up all outgoing publish timers
+        for (_, info) in self.outgoing_publishes.drain() {
+            if let Some(timer) = info.expiry_timer {
+                timer.abort();
+            }
+        }
+        // Clean up all offline message timers
+        for (_, entry) in self.offline_messages.drain(..) {
+            if let Some(timer) = entry.expiry_timer {
+                timer.abort();
+            }
+        }
+        // Clean up will message timer
+        if let Some(mut entry) = self.will_message.take() {
+            if let Some(timer) = entry.expiry_timer.take() {
+                timer.abort();
+            }
+        }
     }
 }
 
@@ -513,6 +688,11 @@ impl SessionStore {
                 session_expiry_interval,
                 need_keep,
             )));
+            // Set self reference for timer callbacks
+            {
+                let mut session_guard = session.write().await;
+                session_guard.set_self_reference(Arc::downgrade(&session));
+            }
             sessions.insert(session_id, session.clone());
             (session, true)
         }

@@ -715,18 +715,6 @@ impl BrokerManager {
                 return None;
             }
 
-            // Clean up expired outgoing PUBLISHes before sending offline messages
-            if let Some(session_arc) = session_store.get_session(&session_id).await {
-                let mut session_guard = session_arc.write().await;
-                let expired_count = session_guard
-                    .cleanup_expired_outgoing_publishes()
-                    .await
-                    .len();
-                if expired_count > 0 {
-                    debug!("Cleaned up {expired_count} expired outgoing PUBLISHes for {client_id}");
-                }
-            }
-
             // Send offline messages
             Self::send_offline_messages(&endpoint_arc, &client_id, offline_messages).await;
 
