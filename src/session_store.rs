@@ -20,6 +20,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+use indexmap::IndexMap;
 use mqtt_endpoint_tokio::mqtt_ep;
 use mqtt_endpoint_tokio::mqtt_ep::prelude::PropertyValueAccess;
 use std::collections::HashMap;
@@ -61,7 +62,14 @@ pub struct OfflineMessage {
     pub retain: bool,
     pub payload: mqtt_ep::common::ArcPayload,
     pub props: Vec<mqtt_ep::packet::Property>,
-    pub stored_at: std::time::Instant, // Time when message was stored
+    pub stored_at: std::time::Instant, // For MessageExpiryInterval update on delivery
+}
+
+/// Offline message entry with Arc and timer management
+#[derive(Debug)]
+struct OfflineMessageEntry {
+    message: Arc<OfflineMessage>,
+    expiry_timer: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// Will message (Last Will and Testament)
@@ -93,8 +101,8 @@ pub struct Session {
     /// Whether the session is currently online
     online: bool,
 
-    /// Offline messages (QoS1/QoS2 only)
-    offline_messages: Vec<OfflineMessage>,
+    /// Offline messages (QoS1/QoS2 only) - key is Arc::as_ptr() address
+    offline_messages: IndexMap<usize, OfflineMessageEntry>,
 
     /// Session expiry interval in seconds (0 means delete on disconnect)
     session_expiry_interval: u32,
@@ -134,7 +142,7 @@ impl Session {
             session_id,
             endpoint: Some(endpoint),
             online: true, // New session starts as online
-            offline_messages: Vec::new(),
+            offline_messages: IndexMap::new(),
             session_expiry_interval,
             expiry_timer: None,
             need_keep,
@@ -223,22 +231,94 @@ impl Session {
     /// Add offline message
     pub fn add_offline_message(&mut self, message: OfflineMessage) {
         // Only store QoS1/QoS2 messages
-        if matches!(
+        if !matches!(
             message.qos,
             mqtt_ep::packet::Qos::AtLeastOnce | mqtt_ep::packet::Qos::ExactlyOnce
         ) {
-            self.offline_messages.push(message);
-            trace!(
-                "Added offline message for session {:?}, total: {}",
-                self.session_id,
-                self.offline_messages.len()
-            );
+            return;
         }
+
+        // Extract MessageExpiryInterval from props
+        let message_expiry_interval = message.props.iter().find_map(|prop| {
+            if let mqtt_ep::packet::Property::MessageExpiryInterval(_) = prop {
+                prop.as_u32()
+            } else {
+                None
+            }
+        });
+
+        // Wrap message in Arc
+        let message_arc = Arc::new(message);
+        let key = Arc::as_ptr(&message_arc) as usize;
+
+        // Spawn expiry timer if MessageExpiryInterval is set
+        let expiry_timer = if let Some(expiry_interval) = message_expiry_interval {
+            if let Some(self_weak) = self.self_weak.clone() {
+                let message_weak = Arc::downgrade(&message_arc);
+                let session_id = self.session_id.clone();
+
+                Some(tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(
+                        expiry_interval as u64,
+                    ))
+                    .await;
+
+                    trace!(
+                        "MessageExpiryInterval timer fired for offline message, session={session_id}"
+                    );
+
+                    // Remove from offline_messages map using the message pointer as key
+                    if let Some(session_arc) = self_weak.upgrade() {
+                        if let Some(message_arc) = message_weak.upgrade() {
+                            let key = Arc::as_ptr(&message_arc) as usize;
+                            let mut session_guard = session_arc.write().await;
+                            session_guard.offline_messages.shift_remove(&key);
+                            trace!("Removed expired offline message for session={session_id}");
+                        }
+                    }
+                }))
+            } else {
+                trace!(
+                    "self_weak not set, cannot spawn expiry timer for offline message"
+                );
+                None
+            }
+        } else {
+            None
+        };
+
+        // Store in IndexMap
+        self.offline_messages.insert(
+            key,
+            OfflineMessageEntry {
+                message: message_arc,
+                expiry_timer,
+            },
+        );
+
+        trace!(
+            "Added offline message for session {:?}, total: {}",
+            self.session_id,
+            self.offline_messages.len()
+        );
     }
 
-    /// Take all offline messages
+    /// Take all offline messages (in insertion order)
     pub fn take_offline_messages(&mut self) -> Vec<OfflineMessage> {
-        std::mem::take(&mut self.offline_messages)
+        let entries = std::mem::take(&mut self.offline_messages);
+
+        entries
+            .into_iter()
+            .map(|(_key, mut entry)| {
+                // Cancel expiry timer
+                if let Some(timer) = entry.expiry_timer.take() {
+                    timer.abort();
+                }
+                // Unwrap Arc - this should succeed since we're the only owner after taking
+                Arc::try_unwrap(entry.message)
+                    .unwrap_or_else(|arc| (*arc).clone())
+            })
+            .collect()
     }
 
     /// Remove outgoing PUBLISH tracking (called when ACK received)
@@ -455,6 +535,12 @@ impl Drop for Session {
         // Clean up all outgoing publish timers
         for (_, info) in self.outgoing_publishes.drain() {
             if let Some(timer) = info.expiry_timer {
+                timer.abort();
+            }
+        }
+        // Clean up all offline message timers
+        for (_, entry) in self.offline_messages.drain(..) {
+            if let Some(timer) = entry.expiry_timer {
                 timer.abort();
             }
         }
