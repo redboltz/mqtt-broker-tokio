@@ -1383,10 +1383,7 @@ async fn test_retained_message_timer_deletion_v5_0() {
         .await
         .expect("Failed to send PUBLISH");
 
-    publisher
-        .close()
-        .await
-        .expect("Failed to close publisher");
+    publisher.close().await.expect("Failed to close publisher");
 
     // Wait 3 seconds for the timer to fire and delete the retained message
     println!("⏳ Waiting 3 seconds for MessageExpiryInterval timer to fire...");

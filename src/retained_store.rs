@@ -104,8 +104,7 @@ impl RetainedStore {
             let topic_name_owned = topic_name.to_string();
 
             Some(tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(expiry_interval as u64))
-                    .await;
+                tokio::time::sleep(std::time::Duration::from_secs(expiry_interval as u64)).await;
 
                 trace!(
                     "MessageExpiryInterval timer fired for retained message, topic={topic_name_owned}"
@@ -119,7 +118,9 @@ impl RetainedStore {
 
                         if let Some(node) = Self::find_node_mut(&mut root_guard, &segments, 0) {
                             node.message = None;
-                            trace!("Removed expired retained message for topic '{topic_name_owned}'");
+                            trace!(
+                                "Removed expired retained message for topic '{topic_name_owned}'"
+                            );
                         }
                     }
                 }

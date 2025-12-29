@@ -178,7 +178,9 @@ impl Session {
 
     /// Get will message
     pub fn will_message(&self) -> Option<&WillMessage> {
-        self.will_message.as_ref().map(|entry| entry.message.as_ref())
+        self.will_message
+            .as_ref()
+            .map(|entry| entry.message.as_ref())
     }
 
     /// Set will message
@@ -323,10 +325,8 @@ impl Session {
                 let session_id = self.session_id.clone();
 
                 Some(tokio::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_secs(
-                        expiry_interval as u64,
-                    ))
-                    .await;
+                    tokio::time::sleep(std::time::Duration::from_secs(expiry_interval as u64))
+                        .await;
 
                     trace!(
                         "MessageExpiryInterval timer fired for offline message, session={session_id}"
@@ -343,9 +343,7 @@ impl Session {
                     }
                 }))
             } else {
-                trace!(
-                    "self_weak not set, cannot spawn expiry timer for offline message"
-                );
+                trace!("self_weak not set, cannot spawn expiry timer for offline message");
                 None
             }
         } else {
@@ -380,8 +378,7 @@ impl Session {
                     timer.abort();
                 }
                 // Unwrap Arc - this should succeed since we're the only owner after taking
-                Arc::try_unwrap(entry.message)
-                    .unwrap_or_else(|arc| (*arc).clone())
+                Arc::try_unwrap(entry.message).unwrap_or_else(|arc| (*arc).clone())
             })
             .collect()
     }
@@ -556,10 +553,8 @@ impl Session {
                             };
 
                             // Track outgoing PUBLISH for QoS 1/2
-                            self.outgoing_publishes.insert(
-                                packet_id,
-                                OutgoingPublishInfo { expiry_timer },
-                            );
+                            self.outgoing_publishes
+                                .insert(packet_id, OutgoingPublishInfo { expiry_timer });
                         }
                     }
                     _ => {
