@@ -20,6 +20,7 @@ impl BrokerManager {
     /// Handle SUBSCRIBE in endpoint task (unified for both v3.1.1 and v5.0)
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn handle_subscribe(
+        &self,
         packet_id: u16,
         entries: &[mqtt_ep::packet::SubEntry],
         props: Vec<mqtt_ep::packet::Property>,
@@ -31,20 +32,29 @@ impl BrokerManager {
         retained_store: &Arc<RetainedStore>,
         session_store: &Arc<SessionStore>,
     ) -> anyhow::Result<()> {
+        // Get endpoint version to determine if features should be checked
+        let endpoint_version = endpoint
+            .get_protocol_version()
+            .await
+            .unwrap_or(mqtt_ep::Version::V5_0);
+
         // Extract SubscriptionIdentifier from properties
         let sub_id = props.iter().find_map(|prop| match prop {
             mqtt_ep::packet::Property::SubscriptionIdentifier(_) => prop.as_u32(),
             _ => None,
         });
 
-        let mut topic_filters = Vec::new();
-        let mut entry_info = Vec::new(); // Store (topic_filter, qos, rh, rap, nl, is_shared)
+        // Check subscription identifier support (MQTT v5.0 only)
+        if endpoint_version == mqtt_ep::Version::V5_0 && sub_id.is_some() && !self.sub_id_support {
+            error!("Subscription identifiers not supported but client provided one");
+            // Send SUBACK with failure for all entries
+            let return_codes = vec![mqtt_ep::result_code::SubackReturnCode::Failure; entries.len()];
+            Self::send_suback(endpoint, packet_id, return_codes, Vec::new()).await?;
+            return Ok(());
+        }
 
-        // Get endpoint version to determine if nl should be extracted
-        let endpoint_version = endpoint
-            .get_protocol_version()
-            .await
-            .unwrap_or(mqtt_ep::Version::V5_0);
+        let mut topic_filters = Vec::new();
+        let mut entry_info = Vec::new(); // Store (topic_filter, qos, rh, rap, nl, is_shared, failure_reason)
 
         for entry in entries {
             let topic_filter = entry.topic_filter().to_string();
@@ -77,6 +87,30 @@ impl BrokerManager {
                 return Err(anyhow::anyhow!(
                     "Protocol Error: SharedSubscription with NoLocal=true"
                 ));
+            }
+
+            // Feature support checks (MQTT v5.0 only)
+            let mut feature_check_failed = None;
+
+            if endpoint_version == mqtt_ep::Version::V5_0 {
+                // Check shared subscription support
+                if is_shared && !self.shared_sub_support {
+                    error!("Shared subscriptions not supported but client tried to use: '{topic_filter}'");
+                    feature_check_failed = Some(
+                        mqtt_ep::result_code::SubackReasonCode::SharedSubscriptionsNotSupported,
+                    );
+                }
+
+                // Check wildcard subscription support
+                if feature_check_failed.is_none()
+                    && (topic_filter.contains('+') || topic_filter.contains('#'))
+                    && !self.wc_support
+                {
+                    error!("Wildcard subscriptions not supported but client tried to use: '{topic_filter}'");
+                    feature_check_failed = Some(
+                        mqtt_ep::result_code::SubackReasonCode::WildcardSubscriptionsNotSupported,
+                    );
+                }
             }
 
             // Check authorization if security is configured
@@ -146,16 +180,39 @@ impl BrokerManager {
                 true
             };
 
-            if authorized {
+            // Determine if this subscription should be processed
+            let should_process = feature_check_failed.is_none() && authorized;
+
+            if should_process {
                 topic_filters.push((topic_filter.clone(), qos, rap, nl));
                 trace!(
                     "SUBSCRIBE: endpoint wants to subscribe to '{topic_filter}' with QoS {qos:?}, RH={rh:?}, RAP={rap}, NL={nl}"
                 );
+            } else if feature_check_failed.is_some() {
+                // Feature check failed - specific reason code will be returned
+                trace!(
+                    "SUBSCRIBE: subscription to '{topic_filter}' denied due to unsupported feature"
+                );
             } else {
-                // Don't add to topic_filters for unauthorized subscriptions
+                // Authorization failed
                 trace!("SUBSCRIBE: subscription to '{topic_filter}' denied by authorization");
             }
-            entry_info.push((topic_filter, qos, rh, rap, nl, is_shared, authorized));
+
+            // Store failure reason: Some(reason_code) if failed, None if authorized
+            let failure_reason = if let Some(reason_code) = feature_check_failed {
+                Some(reason_code)
+            } else if !authorized {
+                // For v5.0 use NotAuthorized, for v3.1.1 use generic Failure
+                if endpoint_version == mqtt_ep::Version::V5_0 {
+                    Some(mqtt_ep::result_code::SubackReasonCode::NotAuthorized)
+                } else {
+                    None // Will be mapped to Failure in v3.1.1
+                }
+            } else {
+                None // Success - will be determined by subscription manager
+            };
+
+            entry_info.push((topic_filter, qos, rh, rap, nl, is_shared, failure_reason));
         }
 
         // Send to subscription manager and wait for response (only for authorized subscriptions)
@@ -174,34 +231,83 @@ impl BrokerManager {
             Vec::new()
         };
 
-        // Build return codes for SUBACK based on authorization and subscription results
-        let mut return_codes = Vec::new();
-        let mut subscription_results_iter = return_codes_with_is_new.iter();
+        // Build return codes for SUBACK based on feature support, authorization and subscription results
+        if endpoint_version == mqtt_ep::Version::V5_0 {
+            // For v5.0, build SubackReasonCode vec directly
+            let mut reason_codes = Vec::new();
+            let mut subscription_results_iter = return_codes_with_is_new.iter();
 
-        for (_topic_filter, _qos, _rh, _rap, _nl, _is_shared, authorized) in &entry_info {
-            if *authorized {
-                // Get result from subscription manager
-                if let Some((rc, _is_new)) = subscription_results_iter.next() {
-                    return_codes.push(*rc);
+            for (_topic_filter, _qos, _rh, _rap, _nl, _is_shared, failure_reason) in &entry_info {
+                if let Some(reason_code) = failure_reason {
+                    // Failed due to feature support or authorization
+                    reason_codes.push(*reason_code);
                 } else {
-                    // Should not happen, but handle gracefully
-                    return_codes.push(mqtt_ep::result_code::SubackReturnCode::Failure);
+                    // Success - get result from subscription manager
+                    if let Some((rc, _is_new)) = subscription_results_iter.next() {
+                        // Convert SubackReturnCode to SubackReasonCode
+                        let reason_code = match rc {
+                            mqtt_ep::result_code::SubackReturnCode::SuccessMaximumQos0 => {
+                                mqtt_ep::result_code::SubackReasonCode::GrantedQos0
+                            }
+                            mqtt_ep::result_code::SubackReturnCode::SuccessMaximumQos1 => {
+                                mqtt_ep::result_code::SubackReasonCode::GrantedQos1
+                            }
+                            mqtt_ep::result_code::SubackReturnCode::SuccessMaximumQos2 => {
+                                mqtt_ep::result_code::SubackReasonCode::GrantedQos2
+                            }
+                            mqtt_ep::result_code::SubackReturnCode::Failure => {
+                                mqtt_ep::result_code::SubackReasonCode::UnspecifiedError
+                            }
+                        };
+                        reason_codes.push(reason_code);
+                    } else {
+                        // Should not happen, but handle gracefully
+                        reason_codes.push(mqtt_ep::result_code::SubackReasonCode::UnspecifiedError);
+                    }
                 }
-            } else {
-                // Unauthorized subscription - return Failure
-                return_codes.push(mqtt_ep::result_code::SubackReturnCode::Failure);
             }
-        }
 
-        // Send SUBACK using the unified function
-        // Note: SUBACK should not include SubscriptionIdentifier property from SUBSCRIBE
-        Self::send_suback(endpoint, packet_id, return_codes, Vec::new()).await?;
+            // Send SUBACK for v5.0
+            let suback = mqtt_ep::packet::v5_0::Suback::builder()
+                .packet_id(packet_id)
+                .reason_codes(reason_codes)
+                .build()
+                .unwrap();
+            endpoint.send(suback).await?;
+        } else {
+            // For v3.1.1, build SubackReturnCode vec
+            let mut return_codes = Vec::new();
+            let mut subscription_results_iter = return_codes_with_is_new.iter();
+
+            for (_topic_filter, _qos, _rh, _rap, _nl, _is_shared, failure_reason) in &entry_info {
+                if failure_reason.is_some() {
+                    // Failed - return Failure
+                    return_codes.push(mqtt_ep::result_code::SubackReturnCode::Failure);
+                } else {
+                    // Get result from subscription manager
+                    if let Some((rc, _is_new)) = subscription_results_iter.next() {
+                        return_codes.push(*rc);
+                    } else {
+                        // Should not happen, but handle gracefully
+                        return_codes.push(mqtt_ep::result_code::SubackReturnCode::Failure);
+                    }
+                }
+            }
+
+            // Send SUBACK for v3.1.1
+            let suback = mqtt_ep::packet::v3_1_1::Suback::builder()
+                .packet_id(packet_id)
+                .return_codes(return_codes)
+                .build()
+                .unwrap();
+            endpoint.send(suback).await?;
+        }
 
         // Send retained messages based on Retain Handling (RH)
         let mut subscription_results_iter = return_codes_with_is_new.iter();
-        for (topic_filter, sub_qos, rh, _rap, _nl, is_shared, authorized) in &entry_info {
-            // Skip if not authorized
-            if !authorized {
+        for (topic_filter, sub_qos, rh, _rap, _nl, is_shared, failure_reason) in &entry_info {
+            // Skip if failed (not authorized or feature not supported)
+            if failure_reason.is_some() {
                 continue;
             }
 

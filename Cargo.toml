@@ -18,7 +18,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Core MQTT functionality
-mqtt-endpoint-tokio = { version = "0.6", default-features = false, features = ["sso-lv10", "tls", "ws", "quic"] }
+mqtt-endpoint-tokio = { version = "0.6.2", default-features = false, features = ["sso-lv10", "tls", "ws", "quic", "unix-socket"] }
 
 # Application framework
 anyhow = "1.0"

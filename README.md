@@ -43,17 +43,84 @@ A high-performance async MQTT broker implementation built with tokio and [mqtt-e
 ```
 Usage: mqtt-broker [OPTIONS]
 
-Options:
-      --cpus <CPUS>                 Number of worker threads (defaults to CPU count)
-      --log-level <LOG_LEVEL>       Log level [default: info] [possible values: error, warn, info, debug, trace]
-      --tcp-port <TCP_PORT>         TCP port for plain MQTT
-      --tls-port <TLS_PORT>         TLS port for secure MQTT
-      --ws-port <WS_PORT>           WebSocket port for MQTT over WebSocket
-      --ws-tls-port <WS_TLS_PORT>   WebSocket over TLS port for secure MQTT over WebSocket
-      --server-crt <SERVER_CRT>     Path to server certificate file (required for TLS ports)
-      --server-key <SERVER_KEY>     Path to server private key file (required for TLS ports)
-  -h, --help                        Print help
-  -V, --version                     Print version
+Tokio Runtime Options:
+      --worker-threads <WORKER_THREADS>
+          Number of worker threads for async tasks
+      --max-blocking-threads <MAX_BLOCKING_THREADS>
+          Number of blocking threads for blocking operations
+      --thread-keep-alive <THREAD_KEEP_ALIVE>
+          Enable thread keep alive for worker threads [possible values: true, false]
+      --thread-stack-size <THREAD_STACK_SIZE>
+          Thread stack size in bytes
+      --global-queue-interval <GLOBAL_QUEUE_INTERVAL>
+          Global queue interval for work stealing (microseconds)
+      --event-interval <EVENT_INTERVAL>
+          Event loop interval for polling (microseconds)
+
+Logging:
+      --log-level <LOG_LEVEL>
+          Log level [default: info]
+          [possible values: error, warn, info, debug, trace]
+
+Network Ports:
+      --tcp-port <TCP_PORT>
+          TCP port for plain MQTT
+      --tls-port <TLS_PORT>
+          TLS port for secure MQTT
+      --ws-port <WS_PORT>
+          WebSocket port for MQTT over WebSocket
+      --ws-tls-port <WS_TLS_PORT>
+          WebSocket over TLS port for secure MQTT over WebSocket
+      --quic-port <QUIC_PORT>
+          QUIC port for MQTT over QUIC
+
+TLS Configuration:
+      --server-crt <SERVER_CRT>
+          Path to server certificate file (required when tls_port, ws_tls_port, or quic_port is specified)
+      --server-key <SERVER_KEY>
+          Path to server private key file (required when tls_port, ws_tls_port, or quic_port is specified)
+
+Socket Options:
+      --socket-no-delay <SOCKET_NO_DELAY>
+          Enable TCP_NODELAY socket option [possible values: true, false]
+      --socket-send-buf-size <SOCKET_SEND_BUF_SIZE>
+          TCP socket send buffer size in bytes
+      --socket-recv-buf-size <SOCKET_RECV_BUF_SIZE>
+          TCP socket receive buffer size in bytes
+      --socket-reuseport <SOCKET_REUSEPORT>
+          Enable SO_REUSEPORT for load balancing across threads (Linux/macOS/BSD)
+          [possible values: true, false]
+      --socket-keepalive-time <SOCKET_KEEPALIVE_TIME>
+          TCP keepalive time in seconds (0 to disable)
+
+MQTT Endpoint Options:
+      --ep-recv-buf-size <EP_RECV_BUF_SIZE>
+          MQTT endpoint receive buffer size for tokio stream reads in bytes
+
+Authentication/Authorization:
+      --auth-file <AUTH_FILE>
+          Path to authentication/authorization configuration file (JSON5 format with comments support)
+          [default: auth.json]
+
+MQTT v5.0 Feature Support:
+      --retain-support <RETAIN_SUPPORT>
+          Enable retain message support (MQTT v5.0 Retain Available)
+          [default: true] [possible values: true, false]
+      --shared-sub-support <SHARED_SUB_SUPPORT>
+          Enable shared subscription support (MQTT v5.0 Shared Subscription Available)
+          [default: true] [possible values: true, false]
+      --sub-id-support <SUB_ID_SUPPORT>
+          Enable subscription identifier support (MQTT v5.0 Subscription Identifier Available)
+          [default: true] [possible values: true, false]
+      --wc-support <WC_SUPPORT>
+          Enable wildcard subscription support (MQTT v5.0 Wildcard Subscription Available)
+          [default: true] [possible values: true, false]
+
+Other Options:
+  -h, --help
+          Print help
+  -V, --version
+          Print version
 ```
 
 ## Building
@@ -68,6 +135,47 @@ cargo build --release
 # The binary will be available at:
 # target/debug/mqtt-broker (debug)
 # target/release/mqtt-broker (release)
+```
+
+## MQTT v5.0 Feature Support
+
+The broker supports optional disabling of MQTT v5.0 features. By default, all features are enabled.
+
+### Feature Flags
+
+- **`--retain-support`**: Control retain message support
+  - When disabled (`--retain-support=false`), the broker rejects PUBLISH packets with the retain flag set
+  - Clients are notified via the `Retain Available` property in CONNACK (value 0 when disabled)
+  - QoS 0: Connection is closed
+  - QoS 1/2: PUBACK/PUBREC with `ImplementationSpecificError` is returned
+
+- **`--shared-sub-support`**: Control shared subscription support
+  - When disabled (`--shared-sub-support=false`), subscriptions to `$share/` topics are rejected
+  - Clients are notified via the `Shared Subscription Available` property in CONNACK
+  - SUBACK returns `SharedSubscriptionsNotSupported` (0x9E) for shared subscription attempts
+
+- **`--sub-id-support`**: Control subscription identifier support
+  - When disabled (`--sub-id-support=false`), SUBSCRIBE packets with Subscription Identifier property are rejected
+  - Clients are notified via the `Subscription Identifier Available` property in CONNACK
+  - All subscription entries in the SUBSCRIBE packet will fail
+
+- **`--wc-support`**: Control wildcard subscription support
+  - When disabled (`--wc-support=false`), subscriptions containing `+` or `#` wildcards are rejected
+  - Clients are notified via the `Wildcard Subscription Available` property in CONNACK
+  - SUBACK returns `WildcardSubscriptionsNotSupported` (0xA2) for wildcard subscription attempts
+  - Exact match subscriptions (without wildcards) continue to work normally
+
+### Example Usage
+
+```bash
+# Disable retain message support
+./mqtt-broker --tcp-port 1883 --retain-support=false
+
+# Disable multiple features
+./mqtt-broker --tcp-port 1883 \
+  --retain-support=false \
+  --shared-sub-support=false \
+  --wc-support=false
 ```
 
 ## TLS Configuration

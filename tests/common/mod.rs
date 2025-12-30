@@ -37,7 +37,12 @@ pub struct BrokerProcess {
 }
 
 impl BrokerProcess {
+    #[allow(dead_code)]
     pub fn start() -> Self {
+        Self::start_with_args(&[])
+    }
+
+    pub fn start_with_args(extra_args: &[&str]) -> Self {
         // Ensure broker binary is built
         let broker_path = "target/debug/mqtt-broker";
         if !std::path::Path::new(broker_path).exists() {
@@ -70,6 +75,11 @@ impl BrokerProcess {
         // Run the built binary directly
         let mut cmd = Command::new(broker_path);
         cmd.args(["--tcp-port", &port.to_string(), "--log-level", "trace"]);
+
+        // Add extra arguments
+        if !extra_args.is_empty() {
+            cmd.args(extra_args);
+        }
 
         // Set RUST_LOG
         cmd.env("RUST_LOG", "trace");
