@@ -200,15 +200,16 @@ impl BrokerManager {
 
         tokio::spawn(async move {
             // Handle client endpoint
-            let result = broker_manager_for_cleanup.handle_client_endpoint(
-                endpoint,
-                subscription_store_for_endpoint,
-                retained_store_for_endpoint,
-                session_store_for_endpoint,
-                security_for_endpoint,
-                subscription_tx_for_endpoint,
-            )
-            .await;
+            let result = broker_manager_for_cleanup
+                .handle_client_endpoint(
+                    endpoint,
+                    subscription_store_for_endpoint,
+                    retained_store_for_endpoint,
+                    session_store_for_endpoint,
+                    security_for_endpoint,
+                    subscription_tx_for_endpoint,
+                )
+                .await;
 
             // Clean up when endpoint task finishes
             if let Some((session_ref, need_keep)) = result {
@@ -875,18 +876,19 @@ impl BrokerManager {
                         }
                         _ => {
                             // Handle other packets
-                            if let Err(e) = self.handle_received_packet_in_endpoint(
-                                &client_id,
-                                &packet,
-                                &subscription_store,
-                                &retained_store,
-                                &session_store,
-                                &security,
-                                &subscription_tx,
-                                &endpoint_arc,
-                                &session_ref,
-                            )
-                            .await
+                            if let Err(e) = self
+                                .handle_received_packet_in_endpoint(
+                                    &client_id,
+                                    &packet,
+                                    &subscription_store,
+                                    &retained_store,
+                                    &session_store,
+                                    &security,
+                                    &subscription_tx,
+                                    &endpoint_arc,
+                                    &session_ref,
+                                )
+                                .await
                             {
                                 error!("❌ Error handling packet from client {client_id}: {e}");
                                 break;

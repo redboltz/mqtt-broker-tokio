@@ -1055,9 +1055,9 @@ dependencies = [
 
 [[package]]
 name = "mqtt-endpoint-tokio"
-version = "0.6.1"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27cf5c1fbfe0aea2a6b5c0ffb4fc87d9e496b5fd2fbee7cdb27efc90eec66dbf"
+checksum = "7bcdbecdfeca939ef2cd7495322773e310a6d1b9af5263c8212c610f86616f94"
 dependencies = [
  "derive_builder",
  "futures",
@@ -1362,7 +1362,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.5.10",
+ "socket2 0.6.1",
  "thiserror 2.0.17",
  "tokio",
  "tracing",
@@ -1401,7 +1401,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.1",
  "tracing",
  "windows-sys 0.60.2",
 ]

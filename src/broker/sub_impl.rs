@@ -48,10 +48,7 @@ impl BrokerManager {
         if endpoint_version == mqtt_ep::Version::V5_0 && sub_id.is_some() && !self.sub_id_support {
             error!("Subscription identifiers not supported but client provided one");
             // Send SUBACK with failure for all entries
-            let return_codes = vec![
-                mqtt_ep::result_code::SubackReturnCode::Failure;
-                entries.len()
-            ];
+            let return_codes = vec![mqtt_ep::result_code::SubackReturnCode::Failure; entries.len()];
             Self::send_suback(endpoint, packet_id, return_codes, Vec::new()).await?;
             return Ok(());
         }
@@ -99,15 +96,20 @@ impl BrokerManager {
                 // Check shared subscription support
                 if is_shared && !self.shared_sub_support {
                     error!("Shared subscriptions not supported but client tried to use: '{topic_filter}'");
-                    feature_check_failed = Some(mqtt_ep::result_code::SubackReasonCode::SharedSubscriptionsNotSupported);
+                    feature_check_failed = Some(
+                        mqtt_ep::result_code::SubackReasonCode::SharedSubscriptionsNotSupported,
+                    );
                 }
 
                 // Check wildcard subscription support
                 if feature_check_failed.is_none()
                     && (topic_filter.contains('+') || topic_filter.contains('#'))
-                    && !self.wc_support {
+                    && !self.wc_support
+                {
                     error!("Wildcard subscriptions not supported but client tried to use: '{topic_filter}'");
-                    feature_check_failed = Some(mqtt_ep::result_code::SubackReasonCode::WildcardSubscriptionsNotSupported);
+                    feature_check_failed = Some(
+                        mqtt_ep::result_code::SubackReasonCode::WildcardSubscriptionsNotSupported,
+                    );
                 }
             }
 
@@ -188,7 +190,9 @@ impl BrokerManager {
                 );
             } else if feature_check_failed.is_some() {
                 // Feature check failed - specific reason code will be returned
-                trace!("SUBSCRIBE: subscription to '{topic_filter}' denied due to unsupported feature");
+                trace!(
+                    "SUBSCRIBE: subscription to '{topic_filter}' denied due to unsupported feature"
+                );
             } else {
                 // Authorization failed
                 trace!("SUBSCRIBE: subscription to '{topic_filter}' denied by authorization");

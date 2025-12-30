@@ -126,19 +126,19 @@ struct Args {
     auth_file: String,
 
     /// Enable retain message support (MQTT v5.0 Retain Available)
-    #[arg(long, default_value = "true")]
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     retain_support: bool,
 
     /// Enable shared subscription support (MQTT v5.0 Shared Subscription Available)
-    #[arg(long, default_value = "true")]
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     shared_sub_support: bool,
 
     /// Enable subscription identifier support (MQTT v5.0 Subscription Identifier Available)
-    #[arg(long, default_value = "true")]
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     sub_id_support: bool,
 
     /// Enable wildcard subscription support (MQTT v5.0 Wildcard Subscription Available)
-    #[arg(long, default_value = "true")]
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     wc_support: bool,
 }
 
