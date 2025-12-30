@@ -140,6 +140,19 @@ struct Args {
     /// Enable wildcard subscription support (MQTT v5.0 Wildcard Subscription Available)
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     wc_support: bool,
+
+    /// Maximum QoS level supported by the broker (MQTT v5.0 Maximum QoS)
+    /// Valid values: 0, 1, or 2 (default: 2)
+    #[arg(long, default_value_t = 2, value_parser = validate_qos)]
+    maximum_qos: u8,
+}
+
+fn validate_qos(s: &str) -> Result<u8, String> {
+    let qos: u8 = s.parse().map_err(|_| format!("Invalid QoS value: {s}"))?;
+    if qos > 2 {
+        return Err(format!("QoS must be 0, 1, or 2, got {qos}"));
+    }
+    Ok(qos)
 }
 
 fn main() -> anyhow::Result<()> {
@@ -408,12 +421,21 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
         }
     }
 
+    // Convert maximum_qos u8 to Qos enum
+    let maximum_qos = match args.maximum_qos {
+        0 => mqtt_endpoint_tokio::mqtt_ep::packet::Qos::AtMostOnce,
+        1 => mqtt_endpoint_tokio::mqtt_ep::packet::Qos::AtLeastOnce,
+        2 => mqtt_endpoint_tokio::mqtt_ep::packet::Qos::ExactlyOnce,
+        _ => unreachable!("QoS validation should prevent this"),
+    };
+
     // Load authentication/authorization configuration if auth file exists
     let broker = if Path::new(&args.auth_file).exists() {
         info!(
             "Loading authentication/authorization configuration from: {}",
             args.auth_file
         );
+
         match Security::load_json(&args.auth_file) {
             Ok(security) => {
                 info!("Authentication/authorization configuration loaded successfully");
@@ -423,6 +445,7 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
                     args.shared_sub_support,
                     args.sub_id_support,
                     args.wc_support,
+                    maximum_qos,
                     security,
                 )
                 .await?
@@ -446,6 +469,7 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
             args.shared_sub_support,
             args.sub_id_support,
             args.wc_support,
+            maximum_qos,
         )
         .await?
     };
