@@ -103,18 +103,22 @@ Authentication/Authorization:
           [default: auth.json]
 
 MQTT v5.0 Feature Support:
-      --retain-support <RETAIN_SUPPORT>
+      --mqtt-retain-support <RETAIN_SUPPORT>
           Enable retain message support (MQTT v5.0 Retain Available)
           [default: true] [possible values: true, false]
-      --shared-sub-support <SHARED_SUB_SUPPORT>
+      --mqtt-shared-sub-support <SHARED_SUB_SUPPORT>
           Enable shared subscription support (MQTT v5.0 Shared Subscription Available)
           [default: true] [possible values: true, false]
-      --sub-id-support <SUB_ID_SUPPORT>
+      --mqtt-sub-id-support <SUB_ID_SUPPORT>
           Enable subscription identifier support (MQTT v5.0 Subscription Identifier Available)
           [default: true] [possible values: true, false]
-      --wc-support <WC_SUPPORT>
+      --mqtt-wc-support <WC_SUPPORT>
           Enable wildcard subscription support (MQTT v5.0 Wildcard Subscription Available)
           [default: true] [possible values: true, false]
+      --mqtt-maximum-qos <MAXIMUM_QOS>
+          Maximum QoS level supported by the broker (MQTT v5.0 Maximum QoS)
+          Valid values: 0, 1, or 2
+          [default: 2]
 
 Other Options:
   -h, --help
@@ -143,39 +147,51 @@ The broker supports optional disabling of MQTT v5.0 features. By default, all fe
 
 ### Feature Flags
 
-- **`--retain-support`**: Control retain message support
-  - When disabled (`--retain-support=false`), the broker rejects PUBLISH packets with the retain flag set
+- **`--mqtt-retain-support`**: Control retain message support
+  - When disabled (`--mqtt-retain-support=false`), the broker rejects PUBLISH packets with the retain flag set
   - Clients are notified via the `Retain Available` property in CONNACK (value 0 when disabled)
   - QoS 0: Connection is closed
   - QoS 1/2: PUBACK/PUBREC with `ImplementationSpecificError` is returned
 
-- **`--shared-sub-support`**: Control shared subscription support
-  - When disabled (`--shared-sub-support=false`), subscriptions to `$share/` topics are rejected
+- **`--mqtt-shared-sub-support`**: Control shared subscription support
+  - When disabled (`--mqtt-shared-sub-support=false`), subscriptions to `$share/` topics are rejected
   - Clients are notified via the `Shared Subscription Available` property in CONNACK
   - SUBACK returns `SharedSubscriptionsNotSupported` (0x9E) for shared subscription attempts
 
-- **`--sub-id-support`**: Control subscription identifier support
-  - When disabled (`--sub-id-support=false`), SUBSCRIBE packets with Subscription Identifier property are rejected
+- **`--mqtt-sub-id-support`**: Control subscription identifier support
+  - When disabled (`--mqtt-sub-id-support=false`), SUBSCRIBE packets with Subscription Identifier property are rejected
   - Clients are notified via the `Subscription Identifier Available` property in CONNACK
   - All subscription entries in the SUBSCRIBE packet will fail
 
-- **`--wc-support`**: Control wildcard subscription support
-  - When disabled (`--wc-support=false`), subscriptions containing `+` or `#` wildcards are rejected
+- **`--mqtt-wc-support`**: Control wildcard subscription support
+  - When disabled (`--mqtt-wc-support=false`), subscriptions containing `+` or `#` wildcards are rejected
   - Clients are notified via the `Wildcard Subscription Available` property in CONNACK
   - SUBACK returns `WildcardSubscriptionsNotSupported` (0xA2) for wildcard subscription attempts
   - Exact match subscriptions (without wildcards) continue to work normally
+
+- **`--mqtt-maximum-qos`**: Control maximum QoS level
+  - Sets the maximum QoS level supported by the broker (default: 2)
+  - Valid values: 0, 1, or 2
+  - When set to 0 or 1, clients are notified via the `Maximum QoS` property in CONNACK
+  - Will QoS exceeding this limit is rejected with `QoS not supported` (0x9B) in CONNACK
+  - Subscribe QoS is automatically adjusted to `min(requested_qos, maximum_qos)`
+  - Publish QoS exceeding this limit results in DISCONNECT with `QoS not supported` (0x9B)
 
 ### Example Usage
 
 ```bash
 # Disable retain message support
-./mqtt-broker --tcp-port 1883 --retain-support=false
+./mqtt-broker --tcp-port 1883 --mqtt-retain-support=false
+
+# Set maximum QoS to 1
+./mqtt-broker --tcp-port 1883 --mqtt-maximum-qos=1
 
 # Disable multiple features
 ./mqtt-broker --tcp-port 1883 \
-  --retain-support=false \
-  --shared-sub-support=false \
-  --wc-support=false
+  --mqtt-retain-support=false \
+  --mqtt-shared-sub-support=false \
+  --mqtt-wc-support=false \
+  --mqtt-maximum-qos=1
 ```
 
 ## TLS Configuration

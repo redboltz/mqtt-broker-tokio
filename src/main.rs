@@ -126,24 +126,24 @@ struct Args {
     auth_file: String,
 
     /// Enable retain message support (MQTT v5.0 Retain Available)
-    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    #[arg(long = "mqtt-retain-support", default_value_t = true, action = clap::ArgAction::Set)]
     retain_support: bool,
 
     /// Enable shared subscription support (MQTT v5.0 Shared Subscription Available)
-    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    #[arg(long = "mqtt-shared-sub-support", default_value_t = true, action = clap::ArgAction::Set)]
     shared_sub_support: bool,
 
     /// Enable subscription identifier support (MQTT v5.0 Subscription Identifier Available)
-    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    #[arg(long = "mqtt-sub-id-support", default_value_t = true, action = clap::ArgAction::Set)]
     sub_id_support: bool,
 
     /// Enable wildcard subscription support (MQTT v5.0 Wildcard Subscription Available)
-    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    #[arg(long = "mqtt-wc-support", default_value_t = true, action = clap::ArgAction::Set)]
     wc_support: bool,
 
     /// Maximum QoS level supported by the broker (MQTT v5.0 Maximum QoS)
     /// Valid values: 0, 1, or 2 (default: 2)
-    #[arg(long, default_value_t = 2, value_parser = validate_qos)]
+    #[arg(long = "mqtt-maximum-qos", default_value_t = 2, value_parser = validate_qos)]
     maximum_qos: u8,
 }
 

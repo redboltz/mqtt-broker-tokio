@@ -75,7 +75,7 @@ async fn connect_client(port: u16, client_id: &str) -> mqtt_ep::Endpoint<mqtt_ep
 
 #[tokio::test]
 async fn test_retain_support_disabled_connack_v5_0() {
-    let broker = BrokerProcess::start_with_args(&["--retain-support=false"]);
+    let broker = BrokerProcess::start_with_args(&["--mqtt-retain-support=false"]);
     broker.wait_ready().await;
 
     let stream = mqtt_ep::transport::connect_helper::connect_tcp(
@@ -134,7 +134,7 @@ async fn test_retain_support_disabled_connack_v5_0() {
 
 #[tokio::test]
 async fn test_retain_support_disabled_publish_qos0_v5_0() {
-    let broker = BrokerProcess::start_with_args(&["--retain-support=false"]);
+    let broker = BrokerProcess::start_with_args(&["--mqtt-retain-support=false"]);
     broker.wait_ready().await;
 
     let endpoint = connect_client(broker.port(), "test_client").await;
@@ -169,7 +169,7 @@ async fn test_retain_support_disabled_publish_qos0_v5_0() {
 
 #[tokio::test]
 async fn test_retain_support_disabled_publish_qos1_v5_0() {
-    let broker = BrokerProcess::start_with_args(&["--retain-support=false"]);
+    let broker = BrokerProcess::start_with_args(&["--mqtt-retain-support=false"]);
     broker.wait_ready().await;
 
     let endpoint = connect_client(broker.port(), "test_client").await;
@@ -212,7 +212,7 @@ async fn test_retain_support_disabled_publish_qos1_v5_0() {
 
 #[tokio::test]
 async fn test_retain_support_disabled_publish_qos2_v5_0() {
-    let broker = BrokerProcess::start_with_args(&["--retain-support=false"]);
+    let broker = BrokerProcess::start_with_args(&["--mqtt-retain-support=false"]);
     broker.wait_ready().await;
 
     let endpoint = connect_client(broker.port(), "test_client").await;
@@ -255,7 +255,7 @@ async fn test_retain_support_disabled_publish_qos2_v5_0() {
 
 #[tokio::test]
 async fn test_shared_sub_support_disabled_connack_v5_0() {
-    let broker = BrokerProcess::start_with_args(&["--shared-sub-support=false"]);
+    let broker = BrokerProcess::start_with_args(&["--mqtt-shared-sub-support=false"]);
     broker.wait_ready().await;
 
     let stream = mqtt_ep::transport::connect_helper::connect_tcp(
@@ -316,7 +316,7 @@ async fn test_shared_sub_support_disabled_connack_v5_0() {
 
 #[tokio::test]
 async fn test_shared_sub_support_disabled_subscribe_v5_0() {
-    let broker = BrokerProcess::start_with_args(&["--shared-sub-support=false"]);
+    let broker = BrokerProcess::start_with_args(&["--mqtt-shared-sub-support=false"]);
     broker.wait_ready().await;
 
     let endpoint = connect_client(broker.port(), "test_client").await;
@@ -361,7 +361,7 @@ async fn test_shared_sub_support_disabled_subscribe_v5_0() {
 
 #[tokio::test]
 async fn test_sub_id_support_disabled_connack_v5_0() {
-    let broker = BrokerProcess::start_with_args(&["--sub-id-support=false"]);
+    let broker = BrokerProcess::start_with_args(&["--mqtt-sub-id-support=false"]);
     broker.wait_ready().await;
 
     let stream = mqtt_ep::transport::connect_helper::connect_tcp(
@@ -422,7 +422,7 @@ async fn test_sub_id_support_disabled_connack_v5_0() {
 
 #[tokio::test]
 async fn test_sub_id_support_disabled_subscribe_v5_0() {
-    let broker = BrokerProcess::start_with_args(&["--sub-id-support=false"]);
+    let broker = BrokerProcess::start_with_args(&["--mqtt-sub-id-support=false"]);
     broker.wait_ready().await;
 
     let endpoint = connect_client(broker.port(), "test_client").await;
@@ -474,7 +474,7 @@ async fn test_sub_id_support_disabled_subscribe_v5_0() {
 
 #[tokio::test]
 async fn test_wc_support_disabled_connack_v5_0() {
-    let broker = BrokerProcess::start_with_args(&["--wc-support=false"]);
+    let broker = BrokerProcess::start_with_args(&["--mqtt-wc-support=false"]);
     broker.wait_ready().await;
 
     let stream = mqtt_ep::transport::connect_helper::connect_tcp(
@@ -535,7 +535,7 @@ async fn test_wc_support_disabled_connack_v5_0() {
 
 #[tokio::test]
 async fn test_wc_support_disabled_subscribe_single_level_v5_0() {
-    let broker = BrokerProcess::start_with_args(&["--wc-support=false"]);
+    let broker = BrokerProcess::start_with_args(&["--mqtt-wc-support=false"]);
     broker.wait_ready().await;
 
     let endpoint = connect_client(broker.port(), "test_client").await;
@@ -580,7 +580,7 @@ async fn test_wc_support_disabled_subscribe_single_level_v5_0() {
 
 #[tokio::test]
 async fn test_wc_support_disabled_subscribe_multi_level_v5_0() {
-    let broker = BrokerProcess::start_with_args(&["--wc-support=false"]);
+    let broker = BrokerProcess::start_with_args(&["--mqtt-wc-support=false"]);
     broker.wait_ready().await;
 
     let endpoint = connect_client(broker.port(), "test_client").await;
@@ -625,7 +625,7 @@ async fn test_wc_support_disabled_subscribe_multi_level_v5_0() {
 
 #[tokio::test]
 async fn test_wc_support_disabled_subscribe_exact_match_allowed_v5_0() {
-    let broker = BrokerProcess::start_with_args(&["--wc-support=false"]);
+    let broker = BrokerProcess::start_with_args(&["--mqtt-wc-support=false"]);
     broker.wait_ready().await;
 
     let endpoint = connect_client(broker.port(), "test_client").await;

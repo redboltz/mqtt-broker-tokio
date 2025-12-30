@@ -77,7 +77,7 @@ async fn connect_client(port: u16, client_id: &str) -> mqtt_ep::Endpoint<mqtt_ep
 // Test 1: CONNACK with Maximum QoS = 0
 #[tokio::test]
 async fn test_maximum_qos_0_connack_v5_0() {
-    let broker = BrokerProcess::start_with_args(&["--maximum-qos=0"]);
+    let broker = BrokerProcess::start_with_args(&["--mqtt-maximum-qos=0"]);
     broker.wait_ready().await;
 
     let stream = mqtt_ep::transport::connect_helper::connect_tcp(
@@ -141,7 +141,7 @@ async fn test_maximum_qos_0_connack_v5_0() {
 // Test 2: CONNACK with Maximum QoS = 1
 #[tokio::test]
 async fn test_maximum_qos_1_connack_v5_0() {
-    let broker = BrokerProcess::start_with_args(&["--maximum-qos=1"]);
+    let broker = BrokerProcess::start_with_args(&["--mqtt-maximum-qos=1"]);
     broker.wait_ready().await;
 
     let stream = mqtt_ep::transport::connect_helper::connect_tcp(
@@ -205,7 +205,7 @@ async fn test_maximum_qos_1_connack_v5_0() {
 // Test 3: CONNACK with Maximum QoS = 2 (default - property should NOT be sent)
 #[tokio::test]
 async fn test_maximum_qos_2_connack_v5_0() {
-    let broker = BrokerProcess::start_with_args(&["--maximum-qos=2"]);
+    let broker = BrokerProcess::start_with_args(&["--mqtt-maximum-qos=2"]);
     broker.wait_ready().await;
 
     let stream = mqtt_ep::transport::connect_helper::connect_tcp(
@@ -277,7 +277,7 @@ async fn test_will_qos_exceeds_maximum_qos_v5_0() {
 // Test 5: SUBSCRIBE with QoS adjustment
 #[tokio::test]
 async fn test_subscribe_qos_adjustment_v5_0() {
-    let broker = BrokerProcess::start_with_args(&["--maximum-qos=1"]);
+    let broker = BrokerProcess::start_with_args(&["--mqtt-maximum-qos=1"]);
     broker.wait_ready().await;
 
     let endpoint = connect_client(broker.port(), "test_client").await;
@@ -321,7 +321,7 @@ async fn test_subscribe_qos_adjustment_v5_0() {
 // Test 6: PUBLISH QoS exceeds maximum-qos (should disconnect)
 #[tokio::test]
 async fn test_publish_qos_exceeds_maximum_qos_v5_0() {
-    let broker = BrokerProcess::start_with_args(&["--maximum-qos=1"]);
+    let broker = BrokerProcess::start_with_args(&["--mqtt-maximum-qos=1"]);
     broker.wait_ready().await;
 
     let endpoint = connect_client(broker.port(), "test_client").await;
@@ -362,7 +362,7 @@ async fn test_publish_qos_exceeds_maximum_qos_v5_0() {
 // Test 7: PUBLISH with allowed QoS (should succeed)
 #[tokio::test]
 async fn test_publish_qos_allowed_v5_0() {
-    let broker = BrokerProcess::start_with_args(&["--maximum-qos=1"]);
+    let broker = BrokerProcess::start_with_args(&["--mqtt-maximum-qos=1"]);
     broker.wait_ready().await;
 
     let endpoint = connect_client(broker.port(), "test_client").await;
@@ -407,7 +407,7 @@ async fn test_publish_qos_allowed_v5_0() {
 // Test 8: Multiple subscriptions with QoS adjustment
 #[tokio::test]
 async fn test_multiple_subscribe_qos_adjustment_v5_0() {
-    let broker = BrokerProcess::start_with_args(&["--maximum-qos=1"]);
+    let broker = BrokerProcess::start_with_args(&["--mqtt-maximum-qos=1"]);
     broker.wait_ready().await;
 
     let endpoint = connect_client(broker.port(), "test_client").await;
