@@ -83,6 +83,7 @@ pub struct BrokerManager {
     sub_id_support: bool,
     wc_support: bool,
     maximum_qos: mqtt_ep::packet::Qos,
+    receive_maximum: Option<u16>,
 }
 
 impl BrokerManager {
@@ -94,6 +95,7 @@ impl BrokerManager {
         sub_id_support: bool,
         wc_support: bool,
         maximum_qos: mqtt_ep::packet::Qos,
+        receive_maximum: Option<u16>,
     ) -> anyhow::Result<Self> {
         let subscription_store = Arc::new(SubscriptionStore::new());
         let retained_store = Arc::new(RetainedStore::new());
@@ -118,6 +120,7 @@ impl BrokerManager {
             sub_id_support,
             wc_support,
             maximum_qos,
+            receive_maximum,
         })
     }
 
@@ -129,6 +132,7 @@ impl BrokerManager {
         sub_id_support: bool,
         wc_support: bool,
         maximum_qos: mqtt_ep::packet::Qos,
+        receive_maximum: Option<u16>,
         security: Security,
     ) -> anyhow::Result<Self> {
         let subscription_store = Arc::new(SubscriptionStore::new());
@@ -154,6 +158,7 @@ impl BrokerManager {
             sub_id_support,
             wc_support,
             maximum_qos,
+            receive_maximum,
         })
     }
 
@@ -1476,6 +1481,12 @@ impl BrokerManager {
                         mqtt_ep::packet::MaximumQos::new(qos_value).unwrap(),
                     ));
                 }
+                // Add Receive Maximum property if set
+                if let Some(receive_maximum) = self.receive_maximum {
+                    props.push(mqtt_ep::packet::Property::ReceiveMaximum(
+                        mqtt_ep::packet::ReceiveMaximum::new(receive_maximum).unwrap(),
+                    ));
+                }
 
                 if !props.is_empty() {
                     builder = builder.props(props);
@@ -1583,6 +1594,12 @@ impl BrokerManager {
                     };
                     props.push(mqtt_ep::packet::Property::MaximumQos(
                         mqtt_ep::packet::MaximumQos::new(qos_value).unwrap(),
+                    ));
+                }
+                // Add Receive Maximum property if set
+                if let Some(receive_maximum) = self.receive_maximum {
+                    props.push(mqtt_ep::packet::Property::ReceiveMaximum(
+                        mqtt_ep::packet::ReceiveMaximum::new(receive_maximum).unwrap(),
                     ));
                 }
 

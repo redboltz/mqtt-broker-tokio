@@ -145,6 +145,11 @@ struct Args {
     /// Valid values: 0, 1, or 2 (default: 2)
     #[arg(long = "mqtt-maximum-qos", default_value_t = 2, value_parser = validate_qos)]
     maximum_qos: u8,
+
+    /// Receive Maximum value (MQTT v5.0 Receive Maximum)
+    /// Valid values: 1-65535 (default: None - no limit)
+    #[arg(long = "mqtt-receive-maximum", value_parser = validate_receive_maximum)]
+    receive_maximum: Option<u16>,
 }
 
 fn validate_qos(s: &str) -> Result<u8, String> {
@@ -153,6 +158,16 @@ fn validate_qos(s: &str) -> Result<u8, String> {
         return Err(format!("QoS must be 0, 1, or 2, got {qos}"));
     }
     Ok(qos)
+}
+
+fn validate_receive_maximum(s: &str) -> Result<u16, String> {
+    let value: u16 = s
+        .parse()
+        .map_err(|_| format!("Invalid Receive Maximum value: {s}"))?;
+    if value == 0 {
+        return Err("Receive Maximum must be between 1 and 65535, got 0".to_string());
+    }
+    Ok(value)
 }
 
 fn main() -> anyhow::Result<()> {
@@ -446,6 +461,7 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
                     args.sub_id_support,
                     args.wc_support,
                     maximum_qos,
+                    args.receive_maximum,
                     security,
                 )
                 .await?
@@ -470,6 +486,7 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
             args.sub_id_support,
             args.wc_support,
             maximum_qos,
+            args.receive_maximum,
         )
         .await?
     };

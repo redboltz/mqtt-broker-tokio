@@ -119,6 +119,10 @@ MQTT v5.0 Feature Support:
           Maximum QoS level supported by the broker (MQTT v5.0 Maximum QoS)
           Valid values: 0, 1, or 2
           [default: 2]
+      --mqtt-receive-maximum <RECEIVE_MAXIMUM>
+          Receive Maximum value (MQTT v5.0 Receive Maximum)
+          Valid values: 1-65535
+          [default: None - no limit]
 
 Other Options:
   -h, --help
@@ -177,6 +181,12 @@ The broker supports optional disabling of MQTT v5.0 features. By default, all fe
   - Subscribe QoS is automatically adjusted to `min(requested_qos, maximum_qos)`
   - Publish QoS exceeding this limit results in DISCONNECT with `QoS not supported` (0x9B)
 
+- **`--mqtt-receive-maximum`**: Control receive maximum
+  - Sets the maximum number of QoS 1 and QoS 2 messages that can be processed concurrently (default: None - no limit)
+  - Valid values: 1-65535
+  - When set, clients are notified via the `Receive Maximum` property in CONNACK
+  - The underlying mqtt-endpoint-tokio and mqtt-protocol-core libraries handle flow control automatically
+
 ### Example Usage
 
 ```bash
@@ -186,12 +196,16 @@ The broker supports optional disabling of MQTT v5.0 features. By default, all fe
 # Set maximum QoS to 1
 ./mqtt-broker --tcp-port 1883 --mqtt-maximum-qos=1
 
+# Set receive maximum to 100
+./mqtt-broker --tcp-port 1883 --mqtt-receive-maximum=100
+
 # Disable multiple features
 ./mqtt-broker --tcp-port 1883 \
   --mqtt-retain-support=false \
   --mqtt-shared-sub-support=false \
   --mqtt-wc-support=false \
-  --mqtt-maximum-qos=1
+  --mqtt-maximum-qos=1 \
+  --mqtt-receive-maximum=50
 ```
 
 ## TLS Configuration
