@@ -25,8 +25,11 @@ A high-performance async MQTT broker implementation built with tokio and [mqtt-e
 # TCP only (port 1883)
 ./mqtt-broker --tcp-port 1883
 
+# Unix socket (Unix/Linux only)
+./mqtt-broker --unix-socket /tmp/mqtt.sock
+
 # Multiple transports
-./mqtt-broker --tcp-port 1883 --ws-port 8080
+./mqtt-broker --tcp-port 1883 --ws-port 8080 --unix-socket /tmp/mqtt.sock
 
 # With TLS (requires certificates)
 ./mqtt-broker --tcp-port 1883 --tls-port 8883 \
@@ -73,6 +76,8 @@ Network Ports:
           WebSocket over TLS port for secure MQTT over WebSocket
       --quic-port <QUIC_PORT>
           QUIC port for MQTT over QUIC
+      --unix-socket <UNIX_SOCKET>
+          Unix socket path for MQTT connections (Unix only)
 
 TLS Configuration:
       --server-crt <SERVER_CRT>
@@ -305,6 +310,12 @@ openssl req -x509 -newkey rsa:4096 -keyout server.key -out server.crt -days 365 
 ### TCP Connection
 ```bash
 mosquitto_pub -h localhost -p 1883 -t "test/topic" -m "Hello MQTT"
+```
+
+### Unix Socket Connection
+```bash
+# Using mosquitto_pub with Unix socket (if supported)
+mosquitto_pub --unix /tmp/mqtt.sock -t "test/topic" -m "Hello MQTT via Unix socket"
 ```
 
 ### WebSocket Connection

@@ -177,6 +177,10 @@ struct Args {
     /// Valid values: 0-65535
     #[arg(long = "mqtt-session-expiry-interval")]
     session_expiry_interval: Option<u16>,
+
+    /// Unix socket path for MQTT connections (Unix only)
+    #[arg(long = "unix-socket")]
+    unix_socket: Option<String>,
 }
 
 fn validate_qos(s: &str) -> Result<u8, String> {
@@ -501,6 +505,12 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
     info!(
         "  --quic-port    {}",
         args.quic_port.map_or("None".to_string(), |v| v.to_string())
+    );
+    info!(
+        "  --unix-socket  {}",
+        args.unix_socket
+            .as_ref()
+            .map_or("None".to_string(), |v| v.clone())
     );
 
     // Validate TLS configuration if TLS ports are specified
@@ -899,9 +909,48 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
         tasks.push(quic_task);
     }
 
+    // Unix socket listener (Unix only)
+    #[cfg(unix)]
+    if let Some(ref socket_path) = args.unix_socket {
+        use tokio::net::UnixListener;
+
+        info!("Starting Unix socket listener on {socket_path}");
+
+        // Remove existing socket file if it exists
+        if std::path::Path::new(socket_path).exists() {
+            std::fs::remove_file(socket_path)?;
+        }
+
+        let unix_listener = UnixListener::bind(socket_path)?;
+        info!("Listening on Unix socket {socket_path} for MQTT (dual-version support)");
+
+        let broker_clone = broker.clone();
+        let unix_task = tokio::spawn(async move {
+            loop {
+                match unix_listener.accept().await {
+                    Ok((stream, _addr)) => {
+                        trace!("New Unix socket connection");
+                        let broker = broker_clone.clone();
+                        let transport =
+                            mqtt_ep::transport::UnixStreamTransport::from_stream(stream);
+                        tokio::spawn(async move {
+                            if let Err(e) = broker.handle_connection(transport).await {
+                                error!("Unix socket connection error: {e}");
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        error!("Failed to accept Unix socket connection: {e}");
+                    }
+                }
+            }
+        });
+        tasks.push(unix_task);
+    }
+
     if tasks.is_empty() {
         return Err(anyhow::anyhow!(
-            "No listeners configured. Please specify at least one port (--tcp-port, --tls-port, --ws-port, --ws-tls-port, or --quic-port)"
+            "No listeners configured. Please specify at least one port (--tcp-port, --tls-port, --ws-port, --ws-tls-port, --quic-port, or --unix-socket)"
         ));
     }
 
