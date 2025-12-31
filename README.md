@@ -103,18 +103,48 @@ Authentication/Authorization:
           [default: auth.json]
 
 MQTT v5.0 Feature Support:
-      --retain-support <RETAIN_SUPPORT>
+      --mqtt-retain-support <RETAIN_SUPPORT>
           Enable retain message support (MQTT v5.0 Retain Available)
           [default: true] [possible values: true, false]
-      --shared-sub-support <SHARED_SUB_SUPPORT>
+      --mqtt-shared-sub-support <SHARED_SUB_SUPPORT>
           Enable shared subscription support (MQTT v5.0 Shared Subscription Available)
           [default: true] [possible values: true, false]
-      --sub-id-support <SUB_ID_SUPPORT>
+      --mqtt-sub-id-support <SUB_ID_SUPPORT>
           Enable subscription identifier support (MQTT v5.0 Subscription Identifier Available)
           [default: true] [possible values: true, false]
-      --wc-support <WC_SUPPORT>
+      --mqtt-wc-support <WC_SUPPORT>
           Enable wildcard subscription support (MQTT v5.0 Wildcard Subscription Available)
           [default: true] [possible values: true, false]
+      --mqtt-maximum-qos <MAXIMUM_QOS>
+          Maximum QoS level supported by the broker (MQTT v5.0 Maximum QoS)
+          Valid values: 0, 1, or 2
+          [default: 2]
+      --mqtt-receive-maximum <RECEIVE_MAXIMUM>
+          Receive Maximum value (MQTT v5.0 Receive Maximum)
+          Valid values: 1-65535
+          [default: None - no limit]
+      --mqtt-maximum-packet-size <MAXIMUM_PACKET_SIZE>
+          Maximum Packet Size (MQTT v5.0 Maximum Packet Size)
+          Valid values: 1-4294967295
+          [default: None - no limit]
+      --mqtt-topic-alias-maximum <TOPIC_ALIAS_MAXIMUM>
+          Topic Alias Maximum (MQTT v5.0 Topic Alias Maximum)
+          Valid values: 0-65535
+          [default: None - no topic alias support]
+      --mqtt-auto-map-topic-alias <AUTO_MAP_TOPIC_ALIAS>
+          Automatically map topic aliases when sending (MQTT v5.0 Topic Alias)
+          When enabled, the broker automatically assigns and uses topic aliases for outgoing PUBLISH packets
+          [default: false] [possible values: true, false]
+      --mqtt-server-keep-alive <SERVER_KEEP_ALIVE>
+          Server Keep Alive (MQTT v5.0 Server Keep Alive)
+          Override client's Keep Alive value with this value
+          Valid values: 0-65535
+          [default: None - use client's Keep Alive]
+      --mqtt-session-expiry-interval <SESSION_EXPIRY_INTERVAL>
+          Session Expiry Interval (MQTT v5.0 Session Expiry Interval)
+          Override client's Session Expiry Interval with this value
+          Valid values: 0-65535
+          [default: None - use client's value]
 
 Other Options:
   -h, --help
@@ -143,39 +173,119 @@ The broker supports optional disabling of MQTT v5.0 features. By default, all fe
 
 ### Feature Flags
 
-- **`--retain-support`**: Control retain message support
-  - When disabled (`--retain-support=false`), the broker rejects PUBLISH packets with the retain flag set
+- **`--mqtt-retain-support`**: Control retain message support
+  - When disabled (`--mqtt-retain-support=false`), the broker rejects PUBLISH packets with the retain flag set
   - Clients are notified via the `Retain Available` property in CONNACK (value 0 when disabled)
   - QoS 0: Connection is closed
   - QoS 1/2: PUBACK/PUBREC with `ImplementationSpecificError` is returned
 
-- **`--shared-sub-support`**: Control shared subscription support
-  - When disabled (`--shared-sub-support=false`), subscriptions to `$share/` topics are rejected
+- **`--mqtt-shared-sub-support`**: Control shared subscription support
+  - When disabled (`--mqtt-shared-sub-support=false`), subscriptions to `$share/` topics are rejected
   - Clients are notified via the `Shared Subscription Available` property in CONNACK
   - SUBACK returns `SharedSubscriptionsNotSupported` (0x9E) for shared subscription attempts
 
-- **`--sub-id-support`**: Control subscription identifier support
-  - When disabled (`--sub-id-support=false`), SUBSCRIBE packets with Subscription Identifier property are rejected
+- **`--mqtt-sub-id-support`**: Control subscription identifier support
+  - When disabled (`--mqtt-sub-id-support=false`), SUBSCRIBE packets with Subscription Identifier property are rejected
   - Clients are notified via the `Subscription Identifier Available` property in CONNACK
   - All subscription entries in the SUBSCRIBE packet will fail
 
-- **`--wc-support`**: Control wildcard subscription support
-  - When disabled (`--wc-support=false`), subscriptions containing `+` or `#` wildcards are rejected
+- **`--mqtt-wc-support`**: Control wildcard subscription support
+  - When disabled (`--mqtt-wc-support=false`), subscriptions containing `+` or `#` wildcards are rejected
   - Clients are notified via the `Wildcard Subscription Available` property in CONNACK
   - SUBACK returns `WildcardSubscriptionsNotSupported` (0xA2) for wildcard subscription attempts
   - Exact match subscriptions (without wildcards) continue to work normally
+
+- **`--mqtt-maximum-qos`**: Control maximum QoS level
+  - Sets the maximum QoS level supported by the broker (default: 2)
+  - Valid values: 0, 1, or 2
+  - When set to 0 or 1, clients are notified via the `Maximum QoS` property in CONNACK
+  - Will QoS exceeding this limit is rejected with `QoS not supported` (0x9B) in CONNACK
+  - Subscribe QoS is automatically adjusted to `min(requested_qos, maximum_qos)`
+  - Publish QoS exceeding this limit results in DISCONNECT with `QoS not supported` (0x9B)
+
+- **`--mqtt-receive-maximum`**: Control receive maximum
+  - Sets the maximum number of QoS 1 and QoS 2 messages that can be processed concurrently (default: None - no limit)
+  - Valid values: 1-65535
+  - When set, clients are notified via the `Receive Maximum` property in CONNACK
+  - The underlying mqtt-endpoint-tokio and mqtt-protocol-core libraries handle flow control automatically
+
+- **`--mqtt-maximum-packet-size`**: Control maximum packet size
+  - Sets the maximum packet size that the broker will accept (default: None - no limit)
+  - Valid values: 1-4294967295 (32-bit unsigned integer)
+  - When set, clients are notified via the `Maximum Packet Size` property in CONNACK
+  - The underlying mqtt-endpoint-tokio and mqtt-protocol-core libraries handle packet size validation automatically
+
+- **`--mqtt-topic-alias-maximum`**: Control topic alias maximum
+  - Sets the maximum value of Topic Alias that the broker accepts from clients (default: None - topic aliases not supported)
+  - Valid values: 0-65535 (16-bit unsigned integer)
+  - When set, clients are notified via the `Topic Alias Maximum` property in CONNACK
+  - The underlying mqtt-endpoint-tokio and mqtt-protocol-core libraries handle topic alias management automatically
+
+- **`--mqtt-auto-map-topic-alias`**: Automatically map topic aliases when sending
+  - When enabled (default: false), the broker automatically assigns and uses topic aliases for outgoing PUBLISH packets
+  - This can reduce bandwidth usage by replacing topic names with small integer aliases in repeated messages
+  - The underlying mqtt-endpoint-tokio library handles topic alias assignment and mapping automatically
+  - Works in conjunction with `--mqtt-topic-alias-maximum` for bidirectional topic alias support
+
+- **`--mqtt-server-keep-alive`**: Override client's Keep Alive value
+  - When set, the broker ignores the client's Keep Alive value in CONNECT and uses this value instead
+  - The server sends this value via the `Server Keep Alive` property in CONNACK (MQTT v5.0 only)
+  - Valid values: 0-65535 (default: None - use client's Keep Alive)
+  - When None, the broker uses the client's Keep Alive value and doesn't send the Server Keep Alive property
+  - Useful for enforcing uniform Keep Alive intervals across all clients
+
+- **`--mqtt-session-expiry-interval`**: Override client's Session Expiry Interval
+  - When set, the broker ignores the client's Session Expiry Interval in CONNECT and uses this value instead
+  - The server sends this value via the `Session Expiry Interval` property in CONNACK (MQTT v5.0 only)
+  - Valid values: 0-65535 (default: None - use client's value)
+  - When None, the broker uses the client's Session Expiry Interval value and doesn't send the property
+  - Value 0 means session expires immediately after disconnect
+  - Useful for enforcing uniform session persistence policies across all clients
 
 ### Example Usage
 
 ```bash
 # Disable retain message support
-./mqtt-broker --tcp-port 1883 --retain-support=false
+./mqtt-broker --tcp-port 1883 --mqtt-retain-support=false
+
+# Set maximum QoS to 1
+./mqtt-broker --tcp-port 1883 --mqtt-maximum-qos=1
+
+# Set receive maximum to 100
+./mqtt-broker --tcp-port 1883 --mqtt-receive-maximum=100
+
+# Set maximum packet size to 1MB
+./mqtt-broker --tcp-port 1883 --mqtt-maximum-packet-size=1048576
+
+# Set topic alias maximum to 10
+./mqtt-broker --tcp-port 1883 --mqtt-topic-alias-maximum=10
+
+# Enable automatic topic alias mapping for outgoing messages
+./mqtt-broker --tcp-port 1883 --mqtt-auto-map-topic-alias=true
+
+# Enable bidirectional topic alias support
+./mqtt-broker --tcp-port 1883 \
+  --mqtt-topic-alias-maximum=10 \
+  --mqtt-auto-map-topic-alias=true
+
+# Set server keep alive to 60 seconds
+./mqtt-broker --tcp-port 1883 --mqtt-server-keep-alive=60
+
+# Set session expiry interval to 300 seconds (5 minutes)
+./mqtt-broker --tcp-port 1883 --mqtt-session-expiry-interval=300
 
 # Disable multiple features
 ./mqtt-broker --tcp-port 1883 \
-  --retain-support=false \
-  --shared-sub-support=false \
-  --wc-support=false
+  --mqtt-retain-support=false \
+  --mqtt-shared-sub-support=false \
+  --mqtt-wc-support=false \
+  --mqtt-maximum-qos=1 \
+  --mqtt-receive-maximum=50 \
+  --mqtt-maximum-packet-size=1048576 \
+  --mqtt-topic-alias-maximum=10 \
+  --mqtt-auto-map-topic-alias=true \
+  --mqtt-server-keep-alive=60 \
+  --mqtt-session-expiry-interval=300
 ```
 
 ## TLS Configuration

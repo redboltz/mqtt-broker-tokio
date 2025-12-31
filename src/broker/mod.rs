@@ -82,6 +82,13 @@ pub struct BrokerManager {
     shared_sub_support: bool,
     sub_id_support: bool,
     wc_support: bool,
+    maximum_qos: mqtt_ep::packet::Qos,
+    receive_maximum: Option<u16>,
+    maximum_packet_size: Option<u32>,
+    topic_alias_maximum: Option<u16>,
+    auto_map_topic_alias: bool,
+    server_keep_alive: Option<u16>,
+    session_expiry_interval_override: Option<u16>,
 }
 
 impl BrokerManager {
@@ -92,6 +99,13 @@ impl BrokerManager {
         shared_sub_support: bool,
         sub_id_support: bool,
         wc_support: bool,
+        maximum_qos: mqtt_ep::packet::Qos,
+        receive_maximum: Option<u16>,
+        maximum_packet_size: Option<u32>,
+        topic_alias_maximum: Option<u16>,
+        auto_map_topic_alias: bool,
+        server_keep_alive: Option<u16>,
+        session_expiry_interval_override: Option<u16>,
     ) -> anyhow::Result<Self> {
         let subscription_store = Arc::new(SubscriptionStore::new());
         let retained_store = Arc::new(RetainedStore::new());
@@ -115,6 +129,13 @@ impl BrokerManager {
             shared_sub_support,
             sub_id_support,
             wc_support,
+            maximum_qos,
+            receive_maximum,
+            maximum_packet_size,
+            topic_alias_maximum,
+            auto_map_topic_alias,
+            server_keep_alive,
+            session_expiry_interval_override,
         })
     }
 
@@ -125,6 +146,13 @@ impl BrokerManager {
         shared_sub_support: bool,
         sub_id_support: bool,
         wc_support: bool,
+        maximum_qos: mqtt_ep::packet::Qos,
+        receive_maximum: Option<u16>,
+        maximum_packet_size: Option<u32>,
+        topic_alias_maximum: Option<u16>,
+        auto_map_topic_alias: bool,
+        server_keep_alive: Option<u16>,
+        session_expiry_interval_override: Option<u16>,
         security: Security,
     ) -> anyhow::Result<Self> {
         let subscription_store = Arc::new(SubscriptionStore::new());
@@ -149,6 +177,13 @@ impl BrokerManager {
             shared_sub_support,
             sub_id_support,
             wc_support,
+            maximum_qos,
+            receive_maximum,
+            maximum_packet_size,
+            topic_alias_maximum,
+            auto_map_topic_alias,
+            server_keep_alive,
+            session_expiry_interval_override,
         })
     }
 
@@ -165,7 +200,7 @@ impl BrokerManager {
         let mut opts_builder = mqtt_ep::connection_option::ConnectionOption::builder()
             .auto_pub_response(false)
             .auto_ping_response(false)
-            .auto_map_topic_alias_send(false)
+            .auto_map_topic_alias_send(self.auto_map_topic_alias)
             .auto_replace_topic_alias_send(false)
             .connection_establish_timeout_ms(10_000u64)
             .shutdown_timeout_ms(5_000u64);
@@ -388,6 +423,23 @@ impl BrokerManager {
                             let will_qos = connect.will_qos();
                             let will_retain = connect.will_retain();
 
+                            // Check if Will QoS exceeds maximum_qos
+                            if will_qos > self.maximum_qos {
+                                error!(
+                                    "MQTT v3.1.1 client {extracted_id} Will QoS {will_qos:?} exceeds maximum QoS {:?}",
+                                    self.maximum_qos
+                                );
+                                let connack = mqtt_ep::packet::v3_1_1::Connack::builder()
+                                    .session_present(false)
+                                    .return_code(
+                                        mqtt_ep::result_code::ConnectReturnCode::NotAuthorized,
+                                    )
+                                    .build()
+                                    .unwrap();
+                                let _ = endpoint.send(connack).await;
+                                return None;
+                            }
+
                             trace!(
                                 "MQTT v3.1.1 client {extracted_id} has Will message: topic={will_topic}, qos={will_qos:?}, retain={will_retain}"
                             );
@@ -446,7 +498,7 @@ impl BrokerManager {
                         let clean_start = connect.clean_start();
 
                         // Extract SessionExpiryInterval from properties (default: 0)
-                        let session_expiry_interval = connect
+                        let mut session_expiry_interval = connect
                             .props()
                             .iter()
                             .find_map(|prop| {
@@ -457,6 +509,11 @@ impl BrokerManager {
                                 }
                             })
                             .unwrap_or(0);
+
+                        // Override with server-configured value if set
+                        if let Some(override_value) = self.session_expiry_interval_override {
+                            session_expiry_interval = override_value as u32;
+                        }
 
                         // Extract Request Response Information from properties (default: 0 = not requested)
                         let request_response_information = connect
@@ -485,6 +542,23 @@ impl BrokerManager {
                             let will_qos = connect.will_qos();
                             let will_retain = connect.will_retain();
                             let will_props = connect.will_props().to_vec();
+
+                            // Check if Will QoS exceeds maximum_qos
+                            if will_qos > self.maximum_qos {
+                                error!(
+                                    "MQTT v5.0 client {extracted_id} Will QoS {will_qos:?} exceeds maximum QoS {:?}",
+                                    self.maximum_qos
+                                );
+                                let connack = mqtt_ep::packet::v5_0::Connack::builder()
+                                    .session_present(false)
+                                    .reason_code(
+                                        mqtt_ep::result_code::ConnectReasonCode::QosNotSupported,
+                                    )
+                                    .build()
+                                    .unwrap();
+                                let _ = endpoint.send(connack).await;
+                                return None;
+                            }
 
                             // Extract Will Delay Interval from Will properties
                             let will_delay_interval = will_props
@@ -1426,6 +1500,48 @@ impl BrokerManager {
                         mqtt_ep::packet::WildcardSubscriptionAvailable::new(0).unwrap(),
                     ));
                 }
+                // Add Maximum QoS property if QoS is 0 or 1 (don't send if 2, as that would be ProtocolError)
+                if self.maximum_qos != mqtt_ep::packet::Qos::ExactlyOnce {
+                    let qos_value = match self.maximum_qos {
+                        mqtt_ep::packet::Qos::AtMostOnce => 0,
+                        mqtt_ep::packet::Qos::AtLeastOnce => 1,
+                        mqtt_ep::packet::Qos::ExactlyOnce => unreachable!(),
+                    };
+                    props.push(mqtt_ep::packet::Property::MaximumQos(
+                        mqtt_ep::packet::MaximumQos::new(qos_value).unwrap(),
+                    ));
+                }
+                // Add Receive Maximum property if set
+                if let Some(receive_maximum) = self.receive_maximum {
+                    props.push(mqtt_ep::packet::Property::ReceiveMaximum(
+                        mqtt_ep::packet::ReceiveMaximum::new(receive_maximum).unwrap(),
+                    ));
+                }
+                // Add Maximum Packet Size property if set
+                if let Some(maximum_packet_size) = self.maximum_packet_size {
+                    props.push(mqtt_ep::packet::Property::MaximumPacketSize(
+                        mqtt_ep::packet::MaximumPacketSize::new(maximum_packet_size).unwrap(),
+                    ));
+                }
+                // Add Topic Alias Maximum property if set
+                if let Some(topic_alias_maximum) = self.topic_alias_maximum {
+                    props.push(mqtt_ep::packet::Property::TopicAliasMaximum(
+                        mqtt_ep::packet::TopicAliasMaximum::new(topic_alias_maximum).unwrap(),
+                    ));
+                }
+                // Add Server Keep Alive property if set
+                if let Some(server_keep_alive) = self.server_keep_alive {
+                    props.push(mqtt_ep::packet::Property::ServerKeepAlive(
+                        mqtt_ep::packet::ServerKeepAlive::new(server_keep_alive).unwrap(),
+                    ));
+                }
+                // Add Session Expiry Interval property if overridden
+                if let Some(session_expiry_interval) = self.session_expiry_interval_override {
+                    props.push(mqtt_ep::packet::Property::SessionExpiryInterval(
+                        mqtt_ep::packet::SessionExpiryInterval::new(session_expiry_interval as u32)
+                            .unwrap(),
+                    ));
+                }
 
                 if !props.is_empty() {
                     builder = builder.props(props);
@@ -1522,6 +1638,48 @@ impl BrokerManager {
                 if !self.wc_support {
                     props.push(mqtt_ep::packet::Property::WildcardSubscriptionAvailable(
                         mqtt_ep::packet::WildcardSubscriptionAvailable::new(0).unwrap(),
+                    ));
+                }
+                // Add Maximum QoS property if QoS is 0 or 1 (don't send if 2, as that would be ProtocolError)
+                if self.maximum_qos != mqtt_ep::packet::Qos::ExactlyOnce {
+                    let qos_value = match self.maximum_qos {
+                        mqtt_ep::packet::Qos::AtMostOnce => 0,
+                        mqtt_ep::packet::Qos::AtLeastOnce => 1,
+                        mqtt_ep::packet::Qos::ExactlyOnce => unreachable!(),
+                    };
+                    props.push(mqtt_ep::packet::Property::MaximumQos(
+                        mqtt_ep::packet::MaximumQos::new(qos_value).unwrap(),
+                    ));
+                }
+                // Add Receive Maximum property if set
+                if let Some(receive_maximum) = self.receive_maximum {
+                    props.push(mqtt_ep::packet::Property::ReceiveMaximum(
+                        mqtt_ep::packet::ReceiveMaximum::new(receive_maximum).unwrap(),
+                    ));
+                }
+                // Add Maximum Packet Size property if set
+                if let Some(maximum_packet_size) = self.maximum_packet_size {
+                    props.push(mqtt_ep::packet::Property::MaximumPacketSize(
+                        mqtt_ep::packet::MaximumPacketSize::new(maximum_packet_size).unwrap(),
+                    ));
+                }
+                // Add Topic Alias Maximum property if set
+                if let Some(topic_alias_maximum) = self.topic_alias_maximum {
+                    props.push(mqtt_ep::packet::Property::TopicAliasMaximum(
+                        mqtt_ep::packet::TopicAliasMaximum::new(topic_alias_maximum).unwrap(),
+                    ));
+                }
+                // Add Server Keep Alive property if set
+                if let Some(server_keep_alive) = self.server_keep_alive {
+                    props.push(mqtt_ep::packet::Property::ServerKeepAlive(
+                        mqtt_ep::packet::ServerKeepAlive::new(server_keep_alive).unwrap(),
+                    ));
+                }
+                // Add Session Expiry Interval property if overridden
+                if let Some(session_expiry_interval) = self.session_expiry_interval_override {
+                    props.push(mqtt_ep::packet::Property::SessionExpiryInterval(
+                        mqtt_ep::packet::SessionExpiryInterval::new(session_expiry_interval as u32)
+                            .unwrap(),
                     ));
                 }
 

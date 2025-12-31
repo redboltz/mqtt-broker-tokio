@@ -126,20 +126,85 @@ struct Args {
     auth_file: String,
 
     /// Enable retain message support (MQTT v5.0 Retain Available)
-    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    #[arg(long = "mqtt-retain-support", default_value_t = true, action = clap::ArgAction::Set)]
     retain_support: bool,
 
     /// Enable shared subscription support (MQTT v5.0 Shared Subscription Available)
-    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    #[arg(long = "mqtt-shared-sub-support", default_value_t = true, action = clap::ArgAction::Set)]
     shared_sub_support: bool,
 
     /// Enable subscription identifier support (MQTT v5.0 Subscription Identifier Available)
-    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    #[arg(long = "mqtt-sub-id-support", default_value_t = true, action = clap::ArgAction::Set)]
     sub_id_support: bool,
 
     /// Enable wildcard subscription support (MQTT v5.0 Wildcard Subscription Available)
-    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    #[arg(long = "mqtt-wc-support", default_value_t = true, action = clap::ArgAction::Set)]
     wc_support: bool,
+
+    /// Maximum QoS level supported by the broker (MQTT v5.0 Maximum QoS)
+    /// Valid values: 0, 1, or 2 (default: 2)
+    #[arg(long = "mqtt-maximum-qos", default_value_t = 2, value_parser = validate_qos)]
+    maximum_qos: u8,
+
+    /// Receive Maximum value (MQTT v5.0 Receive Maximum)
+    /// Valid values: 1-65535 (default: None - no limit)
+    #[arg(long = "mqtt-receive-maximum", value_parser = validate_receive_maximum)]
+    receive_maximum: Option<u16>,
+
+    /// Maximum Packet Size (MQTT v5.0 Maximum Packet Size)
+    /// Valid values: 1-4294967295 (default: None - no limit)
+    #[arg(long = "mqtt-maximum-packet-size", value_parser = validate_maximum_packet_size)]
+    maximum_packet_size: Option<u32>,
+
+    /// Topic Alias Maximum (MQTT v5.0 Topic Alias Maximum)
+    /// Valid values: 0-65535 (default: None - no topic alias support)
+    #[arg(long = "mqtt-topic-alias-maximum")]
+    topic_alias_maximum: Option<u16>,
+
+    /// Automatically map topic aliases when sending (MQTT v5.0 Topic Alias)
+    /// When enabled, the broker automatically assigns and uses topic aliases for outgoing PUBLISH packets
+    #[arg(long = "mqtt-auto-map-topic-alias", default_value_t = false, action = clap::ArgAction::Set)]
+    auto_map_topic_alias: bool,
+
+    /// Server Keep Alive (MQTT v5.0 Server Keep Alive)
+    /// Override client's Keep Alive value with this value (default: None - use client's Keep Alive)
+    /// Valid values: 0-65535
+    #[arg(long = "mqtt-server-keep-alive")]
+    server_keep_alive: Option<u16>,
+
+    /// Session Expiry Interval (MQTT v5.0 Session Expiry Interval)
+    /// Override client's Session Expiry Interval with this value (default: None - use client's value)
+    /// Valid values: 0-65535
+    #[arg(long = "mqtt-session-expiry-interval")]
+    session_expiry_interval: Option<u16>,
+}
+
+fn validate_qos(s: &str) -> Result<u8, String> {
+    let qos: u8 = s.parse().map_err(|_| format!("Invalid QoS value: {s}"))?;
+    if qos > 2 {
+        return Err(format!("QoS must be 0, 1, or 2, got {qos}"));
+    }
+    Ok(qos)
+}
+
+fn validate_receive_maximum(s: &str) -> Result<u16, String> {
+    let value: u16 = s
+        .parse()
+        .map_err(|_| format!("Invalid Receive Maximum value: {s}"))?;
+    if value == 0 {
+        return Err("Receive Maximum must be between 1 and 65535, got 0".to_string());
+    }
+    Ok(value)
+}
+
+fn validate_maximum_packet_size(s: &str) -> Result<u32, String> {
+    let value: u32 = s
+        .parse()
+        .map_err(|_| format!("Invalid Maximum Packet Size value: {s}"))?;
+    if value == 0 {
+        return Err("Maximum Packet Size must be between 1 and 4294967295, got 0".to_string());
+    }
+    Ok(value)
 }
 
 fn main() -> anyhow::Result<()> {
@@ -408,12 +473,21 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
         }
     }
 
+    // Convert maximum_qos u8 to Qos enum
+    let maximum_qos = match args.maximum_qos {
+        0 => mqtt_endpoint_tokio::mqtt_ep::packet::Qos::AtMostOnce,
+        1 => mqtt_endpoint_tokio::mqtt_ep::packet::Qos::AtLeastOnce,
+        2 => mqtt_endpoint_tokio::mqtt_ep::packet::Qos::ExactlyOnce,
+        _ => unreachable!("QoS validation should prevent this"),
+    };
+
     // Load authentication/authorization configuration if auth file exists
     let broker = if Path::new(&args.auth_file).exists() {
         info!(
             "Loading authentication/authorization configuration from: {}",
             args.auth_file
         );
+
         match Security::load_json(&args.auth_file) {
             Ok(security) => {
                 info!("Authentication/authorization configuration loaded successfully");
@@ -423,6 +497,13 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
                     args.shared_sub_support,
                     args.sub_id_support,
                     args.wc_support,
+                    maximum_qos,
+                    args.receive_maximum,
+                    args.maximum_packet_size,
+                    args.topic_alias_maximum,
+                    args.auto_map_topic_alias,
+                    args.server_keep_alive,
+                    args.session_expiry_interval,
                     security,
                 )
                 .await?
@@ -446,6 +527,13 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
             args.shared_sub_support,
             args.sub_id_support,
             args.wc_support,
+            maximum_qos,
+            args.receive_maximum,
+            args.maximum_packet_size,
+            args.topic_alias_maximum,
+            args.auto_map_topic_alias,
+            args.server_keep_alive,
+            args.session_expiry_interval,
         )
         .await?
     };

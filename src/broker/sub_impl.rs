@@ -180,14 +180,24 @@ impl BrokerManager {
                 true
             };
 
+            // Adjust QoS to minimum of requested QoS and maximum QoS
+            let adjusted_qos = qos.min(self.maximum_qos);
+
             // Determine if this subscription should be processed
             let should_process = feature_check_failed.is_none() && authorized;
 
             if should_process {
-                topic_filters.push((topic_filter.clone(), qos, rap, nl));
-                trace!(
-                    "SUBSCRIBE: endpoint wants to subscribe to '{topic_filter}' with QoS {qos:?}, RH={rh:?}, RAP={rap}, NL={nl}"
-                );
+                topic_filters.push((topic_filter.clone(), adjusted_qos, rap, nl));
+                if adjusted_qos != qos {
+                    trace!(
+                        "SUBSCRIBE: endpoint wants to subscribe to '{topic_filter}' with QoS {qos:?}, adjusted to {adjusted_qos:?} (maximum QoS: {:?}), RH={rh:?}, RAP={rap}, NL={nl}",
+                        self.maximum_qos
+                    );
+                } else {
+                    trace!(
+                        "SUBSCRIBE: endpoint wants to subscribe to '{topic_filter}' with QoS {qos:?}, RH={rh:?}, RAP={rap}, NL={nl}"
+                    );
+                }
             } else if feature_check_failed.is_some() {
                 // Feature check failed - specific reason code will be returned
                 trace!(

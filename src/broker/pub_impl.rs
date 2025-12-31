@@ -270,6 +270,36 @@ impl BrokerManager {
         use crate::auth_impl::AuthorizationType;
         use tracing::error;
 
+        // Check if QoS exceeds maximum_qos
+        if qos > self.maximum_qos {
+            let endpoint_version = endpoint
+                .get_protocol_version()
+                .await
+                .unwrap_or(mqtt_ep::Version::V5_0);
+
+            error!(
+                "PUBLISH QoS {qos:?} exceeds maximum QoS {:?}",
+                self.maximum_qos
+            );
+
+            if endpoint_version == mqtt_ep::Version::V5_0 {
+                // v5.0: Send DISCONNECT with QoS not supported reason code
+                let disconnect = mqtt_ep::packet::v5_0::Disconnect::builder()
+                    .reason_code(mqtt_ep::result_code::DisconnectReasonCode::QosNotSupported)
+                    .build()
+                    .unwrap();
+                let _ = endpoint.send(disconnect).await;
+            } else {
+                // v3.1.1: Just close the connection (no DISCONNECT packet in v3.1.1)
+                let _ = endpoint.close().await;
+            }
+
+            return Err(anyhow::anyhow!(
+                "QoS {qos:?} exceeds maximum QoS {:?}",
+                self.maximum_qos
+            ));
+        }
+
         // Check retain support (MQTT v5.0)
         if retain && !self.retain_support {
             let endpoint_version = endpoint
