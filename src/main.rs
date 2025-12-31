@@ -171,6 +171,12 @@ struct Args {
     /// Valid values: 0-65535
     #[arg(long = "mqtt-server-keep-alive")]
     server_keep_alive: Option<u16>,
+
+    /// Session Expiry Interval (MQTT v5.0 Session Expiry Interval)
+    /// Override client's Session Expiry Interval with this value (default: None - use client's value)
+    /// Valid values: 0-65535
+    #[arg(long = "mqtt-session-expiry-interval")]
+    session_expiry_interval: Option<u16>,
 }
 
 fn validate_qos(s: &str) -> Result<u8, String> {
@@ -497,6 +503,7 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
                     args.topic_alias_maximum,
                     args.auto_map_topic_alias,
                     args.server_keep_alive,
+                    args.session_expiry_interval,
                     security,
                 )
                 .await?
@@ -526,6 +533,7 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
             args.topic_alias_maximum,
             args.auto_map_topic_alias,
             args.server_keep_alive,
+            args.session_expiry_interval,
         )
         .await?
     };

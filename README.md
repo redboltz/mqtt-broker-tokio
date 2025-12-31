@@ -140,6 +140,11 @@ MQTT v5.0 Feature Support:
           Override client's Keep Alive value with this value
           Valid values: 0-65535
           [default: None - use client's Keep Alive]
+      --mqtt-session-expiry-interval <SESSION_EXPIRY_INTERVAL>
+          Session Expiry Interval (MQTT v5.0 Session Expiry Interval)
+          Override client's Session Expiry Interval with this value
+          Valid values: 0-65535
+          [default: None - use client's value]
 
 Other Options:
   -h, --help
@@ -229,6 +234,14 @@ The broker supports optional disabling of MQTT v5.0 features. By default, all fe
   - When None, the broker uses the client's Keep Alive value and doesn't send the Server Keep Alive property
   - Useful for enforcing uniform Keep Alive intervals across all clients
 
+- **`--mqtt-session-expiry-interval`**: Override client's Session Expiry Interval
+  - When set, the broker ignores the client's Session Expiry Interval in CONNECT and uses this value instead
+  - The server sends this value via the `Session Expiry Interval` property in CONNACK (MQTT v5.0 only)
+  - Valid values: 0-65535 (default: None - use client's value)
+  - When None, the broker uses the client's Session Expiry Interval value and doesn't send the property
+  - Value 0 means session expires immediately after disconnect
+  - Useful for enforcing uniform session persistence policies across all clients
+
 ### Example Usage
 
 ```bash
@@ -258,6 +271,9 @@ The broker supports optional disabling of MQTT v5.0 features. By default, all fe
 # Set server keep alive to 60 seconds
 ./mqtt-broker --tcp-port 1883 --mqtt-server-keep-alive=60
 
+# Set session expiry interval to 300 seconds (5 minutes)
+./mqtt-broker --tcp-port 1883 --mqtt-session-expiry-interval=300
+
 # Disable multiple features
 ./mqtt-broker --tcp-port 1883 \
   --mqtt-retain-support=false \
@@ -268,7 +284,8 @@ The broker supports optional disabling of MQTT v5.0 features. By default, all fe
   --mqtt-maximum-packet-size=1048576 \
   --mqtt-topic-alias-maximum=10 \
   --mqtt-auto-map-topic-alias=true \
-  --mqtt-server-keep-alive=60
+  --mqtt-server-keep-alive=60 \
+  --mqtt-session-expiry-interval=300
 ```
 
 ## TLS Configuration

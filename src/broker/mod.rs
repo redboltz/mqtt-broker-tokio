@@ -88,6 +88,7 @@ pub struct BrokerManager {
     topic_alias_maximum: Option<u16>,
     auto_map_topic_alias: bool,
     server_keep_alive: Option<u16>,
+    session_expiry_interval_override: Option<u16>,
 }
 
 impl BrokerManager {
@@ -104,6 +105,7 @@ impl BrokerManager {
         topic_alias_maximum: Option<u16>,
         auto_map_topic_alias: bool,
         server_keep_alive: Option<u16>,
+        session_expiry_interval_override: Option<u16>,
     ) -> anyhow::Result<Self> {
         let subscription_store = Arc::new(SubscriptionStore::new());
         let retained_store = Arc::new(RetainedStore::new());
@@ -133,6 +135,7 @@ impl BrokerManager {
             topic_alias_maximum,
             auto_map_topic_alias,
             server_keep_alive,
+            session_expiry_interval_override,
         })
     }
 
@@ -149,6 +152,7 @@ impl BrokerManager {
         topic_alias_maximum: Option<u16>,
         auto_map_topic_alias: bool,
         server_keep_alive: Option<u16>,
+        session_expiry_interval_override: Option<u16>,
         security: Security,
     ) -> anyhow::Result<Self> {
         let subscription_store = Arc::new(SubscriptionStore::new());
@@ -179,6 +183,7 @@ impl BrokerManager {
             topic_alias_maximum,
             auto_map_topic_alias,
             server_keep_alive,
+            session_expiry_interval_override,
         })
     }
 
@@ -493,7 +498,7 @@ impl BrokerManager {
                         let clean_start = connect.clean_start();
 
                         // Extract SessionExpiryInterval from properties (default: 0)
-                        let session_expiry_interval = connect
+                        let mut session_expiry_interval = connect
                             .props()
                             .iter()
                             .find_map(|prop| {
@@ -504,6 +509,11 @@ impl BrokerManager {
                                 }
                             })
                             .unwrap_or(0);
+
+                        // Override with server-configured value if set
+                        if let Some(override_value) = self.session_expiry_interval_override {
+                            session_expiry_interval = override_value as u32;
+                        }
 
                         // Extract Request Response Information from properties (default: 0 = not requested)
                         let request_response_information = connect
@@ -1525,6 +1535,13 @@ impl BrokerManager {
                         mqtt_ep::packet::ServerKeepAlive::new(server_keep_alive).unwrap(),
                     ));
                 }
+                // Add Session Expiry Interval property if overridden
+                if let Some(session_expiry_interval) = self.session_expiry_interval_override {
+                    props.push(mqtt_ep::packet::Property::SessionExpiryInterval(
+                        mqtt_ep::packet::SessionExpiryInterval::new(session_expiry_interval as u32)
+                            .unwrap(),
+                    ));
+                }
 
                 if !props.is_empty() {
                     builder = builder.props(props);
@@ -1656,6 +1673,13 @@ impl BrokerManager {
                 if let Some(server_keep_alive) = self.server_keep_alive {
                     props.push(mqtt_ep::packet::Property::ServerKeepAlive(
                         mqtt_ep::packet::ServerKeepAlive::new(server_keep_alive).unwrap(),
+                    ));
+                }
+                // Add Session Expiry Interval property if overridden
+                if let Some(session_expiry_interval) = self.session_expiry_interval_override {
+                    props.push(mqtt_ep::packet::Property::SessionExpiryInterval(
+                        mqtt_ep::packet::SessionExpiryInterval::new(session_expiry_interval as u32)
+                            .unwrap(),
                     ));
                 }
 

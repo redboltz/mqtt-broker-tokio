@@ -352,8 +352,7 @@ async fn test_server_keep_alive() {
                     // Use the Property's as_u16 method to get the value
                     if let Some(value) = prop.as_u16() {
                         assert_eq!(
-                            value,
-                            2,
+                            value, 2,
                             "Server Keep Alive should be 2 as specified in broker args"
                         );
                         found_server_keep_alive = true;
