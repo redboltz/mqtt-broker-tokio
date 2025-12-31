@@ -131,6 +131,10 @@ MQTT v5.0 Feature Support:
           Topic Alias Maximum (MQTT v5.0 Topic Alias Maximum)
           Valid values: 0-65535
           [default: None - no topic alias support]
+      --mqtt-auto-map-topic-alias <AUTO_MAP_TOPIC_ALIAS>
+          Automatically map topic aliases when sending (MQTT v5.0 Topic Alias)
+          When enabled, the broker automatically assigns and uses topic aliases for outgoing PUBLISH packets
+          [default: false] [possible values: true, false]
 
 Other Options:
   -h, --help
@@ -207,6 +211,12 @@ The broker supports optional disabling of MQTT v5.0 features. By default, all fe
   - When set, clients are notified via the `Topic Alias Maximum` property in CONNACK
   - The underlying mqtt-endpoint-tokio and mqtt-protocol-core libraries handle topic alias management automatically
 
+- **`--mqtt-auto-map-topic-alias`**: Automatically map topic aliases when sending
+  - When enabled (default: false), the broker automatically assigns and uses topic aliases for outgoing PUBLISH packets
+  - This can reduce bandwidth usage by replacing topic names with small integer aliases in repeated messages
+  - The underlying mqtt-endpoint-tokio library handles topic alias assignment and mapping automatically
+  - Works in conjunction with `--mqtt-topic-alias-maximum` for bidirectional topic alias support
+
 ### Example Usage
 
 ```bash
@@ -225,6 +235,14 @@ The broker supports optional disabling of MQTT v5.0 features. By default, all fe
 # Set topic alias maximum to 10
 ./mqtt-broker --tcp-port 1883 --mqtt-topic-alias-maximum=10
 
+# Enable automatic topic alias mapping for outgoing messages
+./mqtt-broker --tcp-port 1883 --mqtt-auto-map-topic-alias=true
+
+# Enable bidirectional topic alias support
+./mqtt-broker --tcp-port 1883 \
+  --mqtt-topic-alias-maximum=10 \
+  --mqtt-auto-map-topic-alias=true
+
 # Disable multiple features
 ./mqtt-broker --tcp-port 1883 \
   --mqtt-retain-support=false \
@@ -233,7 +251,8 @@ The broker supports optional disabling of MQTT v5.0 features. By default, all fe
   --mqtt-maximum-qos=1 \
   --mqtt-receive-maximum=50 \
   --mqtt-maximum-packet-size=1048576 \
-  --mqtt-topic-alias-maximum=10
+  --mqtt-topic-alias-maximum=10 \
+  --mqtt-auto-map-topic-alias=true
 ```
 
 ## TLS Configuration

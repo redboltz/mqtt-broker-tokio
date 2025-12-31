@@ -160,6 +160,11 @@ struct Args {
     /// Valid values: 0-65535 (default: None - no topic alias support)
     #[arg(long = "mqtt-topic-alias-maximum")]
     topic_alias_maximum: Option<u16>,
+
+    /// Automatically map topic aliases when sending (MQTT v5.0 Topic Alias)
+    /// When enabled, the broker automatically assigns and uses topic aliases for outgoing PUBLISH packets
+    #[arg(long = "mqtt-auto-map-topic-alias", default_value_t = false, action = clap::ArgAction::Set)]
+    auto_map_topic_alias: bool,
 }
 
 fn validate_qos(s: &str) -> Result<u8, String> {
@@ -484,6 +489,7 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
                     args.receive_maximum,
                     args.maximum_packet_size,
                     args.topic_alias_maximum,
+                    args.auto_map_topic_alias,
                     security,
                 )
                 .await?
@@ -511,6 +517,7 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
             args.receive_maximum,
             args.maximum_packet_size,
             args.topic_alias_maximum,
+            args.auto_map_topic_alias,
         )
         .await?
     };

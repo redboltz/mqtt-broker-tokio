@@ -86,6 +86,7 @@ pub struct BrokerManager {
     receive_maximum: Option<u16>,
     maximum_packet_size: Option<u32>,
     topic_alias_maximum: Option<u16>,
+    auto_map_topic_alias: bool,
 }
 
 impl BrokerManager {
@@ -100,6 +101,7 @@ impl BrokerManager {
         receive_maximum: Option<u16>,
         maximum_packet_size: Option<u32>,
         topic_alias_maximum: Option<u16>,
+        auto_map_topic_alias: bool,
     ) -> anyhow::Result<Self> {
         let subscription_store = Arc::new(SubscriptionStore::new());
         let retained_store = Arc::new(RetainedStore::new());
@@ -127,6 +129,7 @@ impl BrokerManager {
             receive_maximum,
             maximum_packet_size,
             topic_alias_maximum,
+            auto_map_topic_alias,
         })
     }
 
@@ -141,6 +144,7 @@ impl BrokerManager {
         receive_maximum: Option<u16>,
         maximum_packet_size: Option<u32>,
         topic_alias_maximum: Option<u16>,
+        auto_map_topic_alias: bool,
         security: Security,
     ) -> anyhow::Result<Self> {
         let subscription_store = Arc::new(SubscriptionStore::new());
@@ -169,6 +173,7 @@ impl BrokerManager {
             receive_maximum,
             maximum_packet_size,
             topic_alias_maximum,
+            auto_map_topic_alias,
         })
     }
 
@@ -185,7 +190,7 @@ impl BrokerManager {
         let mut opts_builder = mqtt_ep::connection_option::ConnectionOption::builder()
             .auto_pub_response(false)
             .auto_ping_response(false)
-            .auto_map_topic_alias_send(false)
+            .auto_map_topic_alias_send(self.auto_map_topic_alias)
             .auto_replace_topic_alias_send(false)
             .connection_establish_timeout_ms(10_000u64)
             .shutdown_timeout_ms(5_000u64);
