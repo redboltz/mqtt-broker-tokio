@@ -1,7 +1,7 @@
 [package]
 name = "mqtt-broker-tokio"
-version = "0.2.0"
-edition = "2021"
+version = "0.1.0"
+edition = "2024"
 license = "MIT"
 authors = ["Takatoshi Kondo <redboltz@gmail.com>"]
 description = "A high-performance async MQTT broker implementation built with tokio and mqtt-endpoint-tokio"
@@ -18,7 +18,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Core MQTT functionality
-mqtt-endpoint-tokio = { version = "0.6.2", default-features = false, features = ["sso-lv10", "tls", "ws", "quic", "unix-socket"] }
+mqtt-endpoint-tokio = "0.1"
 
 # Application framework
 anyhow = "1.0"
@@ -29,19 +29,12 @@ tokio = { version = "1.0", features = ["full"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
 serde = { version = "1.0", features = ["derive"] }
 prefix_tree_map = "0.2"
-indexmap = "2.0"
-json5 = "0.4"
-sha2 = "0.10"
-hex = "0.4"
 
 # TLS support
-tokio-rustls = "0.26"
-rustls = { version = "0.23", features = ["ring"] }
+tokio-rustls = "0.24"
+rustls = "0.21"
 rustls-native-certs = "0.6"
 rustls-pemfile = "1.0"
-
-# QUIC support
-quinn = "0.11"
 
 # WebSocket support
 tokio-tungstenite = "0.20"
@@ -56,7 +49,6 @@ tracing-appender = "0.2"
 
 # System utilities
 num_cpus = "1.0"
-socket2 = { version = "0.5", features = ["all"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
