@@ -445,22 +445,63 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
         args.ep_recv_buf_size
             .map_or("None".to_string(), |v| v.to_string())
     );
-
-    if let Some(port) = args.tcp_port {
-        info!("TCP port: {port}");
-    }
-    if let Some(port) = args.tls_port {
-        info!("TLS port: {port}");
-    }
-    if let Some(port) = args.ws_port {
-        info!("WebSocket port: {port}");
-    }
-    if let Some(port) = args.ws_tls_port {
-        info!("WebSocket+TLS port: {port}");
-    }
-    if let Some(port) = args.quic_port {
-        info!("QUIC port: {port}");
-    }
+    info!("MQTT v5.0 Feature Support configuration:");
+    info!("  --mqtt-retain-support        {}", args.retain_support);
+    info!("  --mqtt-shared-sub-support    {}", args.shared_sub_support);
+    info!("  --mqtt-sub-id-support        {}", args.sub_id_support);
+    info!("  --mqtt-wc-support            {}", args.wc_support);
+    info!("  --mqtt-maximum-qos           {}", args.maximum_qos);
+    info!(
+        "  --mqtt-receive-maximum       {}",
+        args.receive_maximum
+            .map_or("None".to_string(), |v| v.to_string())
+    );
+    info!(
+        "  --mqtt-maximum-packet-size   {}",
+        args.maximum_packet_size
+            .map_or("None".to_string(), |v| v.to_string())
+    );
+    info!(
+        "  --mqtt-topic-alias-maximum   {}",
+        args.topic_alias_maximum
+            .map_or("None".to_string(), |v| v.to_string())
+    );
+    info!(
+        "  --mqtt-auto-map-topic-alias  {}",
+        args.auto_map_topic_alias
+    );
+    info!(
+        "  --mqtt-server-keep-alive     {}",
+        args.server_keep_alive
+            .map_or("None".to_string(), |v| v.to_string())
+    );
+    info!(
+        "  --mqtt-session-expiry-interval {}",
+        args.session_expiry_interval
+            .map_or("None".to_string(), |v| v.to_string())
+    );
+    info!("Listening Ports:");
+    info!(
+        "  --tcp-port     {}",
+        args.tcp_port.map_or("None".to_string(), |v| v.to_string())
+    );
+    info!(
+        "  --tls-port     {}",
+        args.tls_port.map_or("None".to_string(), |v| v.to_string())
+    );
+    info!(
+        "  --ws-port      {}",
+        args.ws_port.map_or("None".to_string(), |v| v.to_string())
+    );
+    info!(
+        "  --ws-tls-port  {}",
+        args.ws_tls_port
+            .map_or("None".to_string(), |v| v.to_string())
+    );
+    info!(
+        "  --quic-port    {}",
+        args.quic_port.map_or("None".to_string(), |v| v.to_string())
+    );
 
     // Validate TLS configuration if TLS ports are specified
     let tls_required =
