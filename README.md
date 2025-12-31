@@ -123,6 +123,10 @@ MQTT v5.0 Feature Support:
           Receive Maximum value (MQTT v5.0 Receive Maximum)
           Valid values: 1-65535
           [default: None - no limit]
+      --mqtt-maximum-packet-size <MAXIMUM_PACKET_SIZE>
+          Maximum Packet Size (MQTT v5.0 Maximum Packet Size)
+          Valid values: 1-4294967295
+          [default: None - no limit]
 
 Other Options:
   -h, --help
@@ -187,6 +191,12 @@ The broker supports optional disabling of MQTT v5.0 features. By default, all fe
   - When set, clients are notified via the `Receive Maximum` property in CONNACK
   - The underlying mqtt-endpoint-tokio and mqtt-protocol-core libraries handle flow control automatically
 
+- **`--mqtt-maximum-packet-size`**: Control maximum packet size
+  - Sets the maximum packet size that the broker will accept (default: None - no limit)
+  - Valid values: 1-4294967295 (32-bit unsigned integer)
+  - When set, clients are notified via the `Maximum Packet Size` property in CONNACK
+  - The underlying mqtt-endpoint-tokio and mqtt-protocol-core libraries handle packet size validation automatically
+
 ### Example Usage
 
 ```bash
@@ -199,13 +209,17 @@ The broker supports optional disabling of MQTT v5.0 features. By default, all fe
 # Set receive maximum to 100
 ./mqtt-broker --tcp-port 1883 --mqtt-receive-maximum=100
 
+# Set maximum packet size to 1MB
+./mqtt-broker --tcp-port 1883 --mqtt-maximum-packet-size=1048576
+
 # Disable multiple features
 ./mqtt-broker --tcp-port 1883 \
   --mqtt-retain-support=false \
   --mqtt-shared-sub-support=false \
   --mqtt-wc-support=false \
   --mqtt-maximum-qos=1 \
-  --mqtt-receive-maximum=50
+  --mqtt-receive-maximum=50 \
+  --mqtt-maximum-packet-size=1048576
 ```
 
 ## TLS Configuration

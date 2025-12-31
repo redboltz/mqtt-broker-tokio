@@ -150,6 +150,11 @@ struct Args {
     /// Valid values: 1-65535 (default: None - no limit)
     #[arg(long = "mqtt-receive-maximum", value_parser = validate_receive_maximum)]
     receive_maximum: Option<u16>,
+
+    /// Maximum Packet Size (MQTT v5.0 Maximum Packet Size)
+    /// Valid values: 1-4294967295 (default: None - no limit)
+    #[arg(long = "mqtt-maximum-packet-size", value_parser = validate_maximum_packet_size)]
+    maximum_packet_size: Option<u32>,
 }
 
 fn validate_qos(s: &str) -> Result<u8, String> {
@@ -166,6 +171,16 @@ fn validate_receive_maximum(s: &str) -> Result<u16, String> {
         .map_err(|_| format!("Invalid Receive Maximum value: {s}"))?;
     if value == 0 {
         return Err("Receive Maximum must be between 1 and 65535, got 0".to_string());
+    }
+    Ok(value)
+}
+
+fn validate_maximum_packet_size(s: &str) -> Result<u32, String> {
+    let value: u32 = s
+        .parse()
+        .map_err(|_| format!("Invalid Maximum Packet Size value: {s}"))?;
+    if value == 0 {
+        return Err("Maximum Packet Size must be between 1 and 4294967295, got 0".to_string());
     }
     Ok(value)
 }
@@ -462,6 +477,7 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
                     args.wc_support,
                     maximum_qos,
                     args.receive_maximum,
+                    args.maximum_packet_size,
                     security,
                 )
                 .await?
@@ -487,6 +503,7 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
             args.wc_support,
             maximum_qos,
             args.receive_maximum,
+            args.maximum_packet_size,
         )
         .await?
     };

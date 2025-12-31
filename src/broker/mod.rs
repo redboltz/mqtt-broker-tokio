@@ -84,6 +84,7 @@ pub struct BrokerManager {
     wc_support: bool,
     maximum_qos: mqtt_ep::packet::Qos,
     receive_maximum: Option<u16>,
+    maximum_packet_size: Option<u32>,
 }
 
 impl BrokerManager {
@@ -96,6 +97,7 @@ impl BrokerManager {
         wc_support: bool,
         maximum_qos: mqtt_ep::packet::Qos,
         receive_maximum: Option<u16>,
+        maximum_packet_size: Option<u32>,
     ) -> anyhow::Result<Self> {
         let subscription_store = Arc::new(SubscriptionStore::new());
         let retained_store = Arc::new(RetainedStore::new());
@@ -121,6 +123,7 @@ impl BrokerManager {
             wc_support,
             maximum_qos,
             receive_maximum,
+            maximum_packet_size,
         })
     }
 
@@ -133,6 +136,7 @@ impl BrokerManager {
         wc_support: bool,
         maximum_qos: mqtt_ep::packet::Qos,
         receive_maximum: Option<u16>,
+        maximum_packet_size: Option<u32>,
         security: Security,
     ) -> anyhow::Result<Self> {
         let subscription_store = Arc::new(SubscriptionStore::new());
@@ -159,6 +163,7 @@ impl BrokerManager {
             wc_support,
             maximum_qos,
             receive_maximum,
+            maximum_packet_size,
         })
     }
 
@@ -1487,6 +1492,12 @@ impl BrokerManager {
                         mqtt_ep::packet::ReceiveMaximum::new(receive_maximum).unwrap(),
                     ));
                 }
+                // Add Maximum Packet Size property if set
+                if let Some(maximum_packet_size) = self.maximum_packet_size {
+                    props.push(mqtt_ep::packet::Property::MaximumPacketSize(
+                        mqtt_ep::packet::MaximumPacketSize::new(maximum_packet_size).unwrap(),
+                    ));
+                }
 
                 if !props.is_empty() {
                     builder = builder.props(props);
@@ -1600,6 +1611,12 @@ impl BrokerManager {
                 if let Some(receive_maximum) = self.receive_maximum {
                     props.push(mqtt_ep::packet::Property::ReceiveMaximum(
                         mqtt_ep::packet::ReceiveMaximum::new(receive_maximum).unwrap(),
+                    ));
+                }
+                // Add Maximum Packet Size property if set
+                if let Some(maximum_packet_size) = self.maximum_packet_size {
+                    props.push(mqtt_ep::packet::Property::MaximumPacketSize(
+                        mqtt_ep::packet::MaximumPacketSize::new(maximum_packet_size).unwrap(),
                     ));
                 }
 
