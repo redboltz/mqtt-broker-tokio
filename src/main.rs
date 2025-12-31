@@ -155,6 +155,11 @@ struct Args {
     /// Valid values: 1-4294967295 (default: None - no limit)
     #[arg(long = "mqtt-maximum-packet-size", value_parser = validate_maximum_packet_size)]
     maximum_packet_size: Option<u32>,
+
+    /// Topic Alias Maximum (MQTT v5.0 Topic Alias Maximum)
+    /// Valid values: 0-65535 (default: None - no topic alias support)
+    #[arg(long = "mqtt-topic-alias-maximum")]
+    topic_alias_maximum: Option<u16>,
 }
 
 fn validate_qos(s: &str) -> Result<u8, String> {
@@ -478,6 +483,7 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
                     maximum_qos,
                     args.receive_maximum,
                     args.maximum_packet_size,
+                    args.topic_alias_maximum,
                     security,
                 )
                 .await?
@@ -504,6 +510,7 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
             maximum_qos,
             args.receive_maximum,
             args.maximum_packet_size,
+            args.topic_alias_maximum,
         )
         .await?
     };

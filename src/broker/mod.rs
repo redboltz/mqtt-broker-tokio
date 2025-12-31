@@ -85,6 +85,7 @@ pub struct BrokerManager {
     maximum_qos: mqtt_ep::packet::Qos,
     receive_maximum: Option<u16>,
     maximum_packet_size: Option<u32>,
+    topic_alias_maximum: Option<u16>,
 }
 
 impl BrokerManager {
@@ -98,6 +99,7 @@ impl BrokerManager {
         maximum_qos: mqtt_ep::packet::Qos,
         receive_maximum: Option<u16>,
         maximum_packet_size: Option<u32>,
+        topic_alias_maximum: Option<u16>,
     ) -> anyhow::Result<Self> {
         let subscription_store = Arc::new(SubscriptionStore::new());
         let retained_store = Arc::new(RetainedStore::new());
@@ -124,6 +126,7 @@ impl BrokerManager {
             maximum_qos,
             receive_maximum,
             maximum_packet_size,
+            topic_alias_maximum,
         })
     }
 
@@ -137,6 +140,7 @@ impl BrokerManager {
         maximum_qos: mqtt_ep::packet::Qos,
         receive_maximum: Option<u16>,
         maximum_packet_size: Option<u32>,
+        topic_alias_maximum: Option<u16>,
         security: Security,
     ) -> anyhow::Result<Self> {
         let subscription_store = Arc::new(SubscriptionStore::new());
@@ -164,6 +168,7 @@ impl BrokerManager {
             maximum_qos,
             receive_maximum,
             maximum_packet_size,
+            topic_alias_maximum,
         })
     }
 
@@ -1498,6 +1503,12 @@ impl BrokerManager {
                         mqtt_ep::packet::MaximumPacketSize::new(maximum_packet_size).unwrap(),
                     ));
                 }
+                // Add Topic Alias Maximum property if set
+                if let Some(topic_alias_maximum) = self.topic_alias_maximum {
+                    props.push(mqtt_ep::packet::Property::TopicAliasMaximum(
+                        mqtt_ep::packet::TopicAliasMaximum::new(topic_alias_maximum).unwrap(),
+                    ));
+                }
 
                 if !props.is_empty() {
                     builder = builder.props(props);
@@ -1617,6 +1628,12 @@ impl BrokerManager {
                 if let Some(maximum_packet_size) = self.maximum_packet_size {
                     props.push(mqtt_ep::packet::Property::MaximumPacketSize(
                         mqtt_ep::packet::MaximumPacketSize::new(maximum_packet_size).unwrap(),
+                    ));
+                }
+                // Add Topic Alias Maximum property if set
+                if let Some(topic_alias_maximum) = self.topic_alias_maximum {
+                    props.push(mqtt_ep::packet::Property::TopicAliasMaximum(
+                        mqtt_ep::packet::TopicAliasMaximum::new(topic_alias_maximum).unwrap(),
                     ));
                 }
 

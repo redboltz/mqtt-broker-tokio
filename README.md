@@ -127,6 +127,10 @@ MQTT v5.0 Feature Support:
           Maximum Packet Size (MQTT v5.0 Maximum Packet Size)
           Valid values: 1-4294967295
           [default: None - no limit]
+      --mqtt-topic-alias-maximum <TOPIC_ALIAS_MAXIMUM>
+          Topic Alias Maximum (MQTT v5.0 Topic Alias Maximum)
+          Valid values: 0-65535
+          [default: None - no topic alias support]
 
 Other Options:
   -h, --help
@@ -197,6 +201,12 @@ The broker supports optional disabling of MQTT v5.0 features. By default, all fe
   - When set, clients are notified via the `Maximum Packet Size` property in CONNACK
   - The underlying mqtt-endpoint-tokio and mqtt-protocol-core libraries handle packet size validation automatically
 
+- **`--mqtt-topic-alias-maximum`**: Control topic alias maximum
+  - Sets the maximum value of Topic Alias that the broker accepts from clients (default: None - topic aliases not supported)
+  - Valid values: 0-65535 (16-bit unsigned integer)
+  - When set, clients are notified via the `Topic Alias Maximum` property in CONNACK
+  - The underlying mqtt-endpoint-tokio and mqtt-protocol-core libraries handle topic alias management automatically
+
 ### Example Usage
 
 ```bash
@@ -212,6 +222,9 @@ The broker supports optional disabling of MQTT v5.0 features. By default, all fe
 # Set maximum packet size to 1MB
 ./mqtt-broker --tcp-port 1883 --mqtt-maximum-packet-size=1048576
 
+# Set topic alias maximum to 10
+./mqtt-broker --tcp-port 1883 --mqtt-topic-alias-maximum=10
+
 # Disable multiple features
 ./mqtt-broker --tcp-port 1883 \
   --mqtt-retain-support=false \
@@ -219,7 +232,8 @@ The broker supports optional disabling of MQTT v5.0 features. By default, all fe
   --mqtt-wc-support=false \
   --mqtt-maximum-qos=1 \
   --mqtt-receive-maximum=50 \
-  --mqtt-maximum-packet-size=1048576
+  --mqtt-maximum-packet-size=1048576 \
+  --mqtt-topic-alias-maximum=10
 ```
 
 ## TLS Configuration
