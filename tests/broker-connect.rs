@@ -24,6 +24,7 @@ mod common;
 
 use common::BrokerProcess;
 use mqtt_endpoint_tokio::mqtt_ep;
+use mqtt_endpoint_tokio::mqtt_ep::prelude::PropertyValueAccess;
 
 #[tokio::test]
 async fn test_connect_connack_disconnect() {
@@ -283,6 +284,86 @@ async fn test_auto_clientid_v5_0_assigned_client_identifier() {
             assert!(
                 found_assigned_id,
                 "Expected Assigned Client Identifier property in CONNACK"
+            );
+        }
+        _ => panic!("Expected CONNACK, got {packet:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_server_keep_alive() {
+    let broker = BrokerProcess::start_with_args(&["--mqtt-server-keep-alive", "2"]);
+
+    // Wait for broker to be ready
+    broker.wait_ready().await;
+
+    // Connect via TCP
+    let stream = mqtt_ep::transport::connect_helper::connect_tcp(
+        &format!("127.0.0.1:{}", broker.port()),
+        Some(tokio::time::Duration::from_secs(10)),
+    )
+    .await
+    .expect("Failed to connect to broker");
+
+    // Create Endpoint
+    let endpoint = mqtt_ep::Endpoint::<mqtt_ep::role::Client>::new(mqtt_ep::Version::V5_0);
+
+    // Create TcpTransport
+    let transport = mqtt_ep::transport::TcpTransport::from_stream(stream);
+
+    // Attach transport
+    let opts = mqtt_ep::connection_option::ConnectionOption::builder()
+        .build()
+        .expect("Failed to build ConnectionOption");
+
+    endpoint
+        .attach_with_options(transport, mqtt_ep::Mode::Client, opts)
+        .await
+        .expect("Failed to attach transport");
+
+    // Create and send CONNECT packet with Keep Alive 3
+    let connect = mqtt_ep::packet::v5_0::Connect::builder()
+        .client_id("test_client")
+        .expect("Failed to set client_id")
+        .clean_start(true)
+        .keep_alive(3) // Client requests Keep Alive 3
+        .build()
+        .expect("Failed to build CONNECT");
+
+    endpoint
+        .send(connect)
+        .await
+        .expect("Failed to send CONNECT");
+
+    // Receive CONNACK
+    let packet = endpoint.recv().await.expect("Failed to receive CONNACK");
+
+    match packet {
+        mqtt_ep::packet::Packet::V5_0Connack(connack) => {
+            assert_eq!(
+                connack.reason_code(),
+                mqtt_ep::result_code::ConnectReasonCode::Success
+            );
+
+            // Check for Server Keep Alive property with value 2
+            let mut found_server_keep_alive = false;
+            for prop in connack.props() {
+                if let mqtt_ep::packet::Property::ServerKeepAlive(_) = prop {
+                    // Use the Property's as_u16 method to get the value
+                    if let Some(value) = prop.as_u16() {
+                        assert_eq!(
+                            value,
+                            2,
+                            "Server Keep Alive should be 2 as specified in broker args"
+                        );
+                        found_server_keep_alive = true;
+                        break;
+                    }
+                }
+            }
+            assert!(
+                found_server_keep_alive,
+                "Expected Server Keep Alive property in CONNACK"
             );
         }
         _ => panic!("Expected CONNACK, got {packet:?}"),

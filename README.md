@@ -135,6 +135,11 @@ MQTT v5.0 Feature Support:
           Automatically map topic aliases when sending (MQTT v5.0 Topic Alias)
           When enabled, the broker automatically assigns and uses topic aliases for outgoing PUBLISH packets
           [default: false] [possible values: true, false]
+      --mqtt-server-keep-alive <SERVER_KEEP_ALIVE>
+          Server Keep Alive (MQTT v5.0 Server Keep Alive)
+          Override client's Keep Alive value with this value
+          Valid values: 0-65535
+          [default: None - use client's Keep Alive]
 
 Other Options:
   -h, --help
@@ -217,6 +222,13 @@ The broker supports optional disabling of MQTT v5.0 features. By default, all fe
   - The underlying mqtt-endpoint-tokio library handles topic alias assignment and mapping automatically
   - Works in conjunction with `--mqtt-topic-alias-maximum` for bidirectional topic alias support
 
+- **`--mqtt-server-keep-alive`**: Override client's Keep Alive value
+  - When set, the broker ignores the client's Keep Alive value in CONNECT and uses this value instead
+  - The server sends this value via the `Server Keep Alive` property in CONNACK (MQTT v5.0 only)
+  - Valid values: 0-65535 (default: None - use client's Keep Alive)
+  - When None, the broker uses the client's Keep Alive value and doesn't send the Server Keep Alive property
+  - Useful for enforcing uniform Keep Alive intervals across all clients
+
 ### Example Usage
 
 ```bash
@@ -243,6 +255,9 @@ The broker supports optional disabling of MQTT v5.0 features. By default, all fe
   --mqtt-topic-alias-maximum=10 \
   --mqtt-auto-map-topic-alias=true
 
+# Set server keep alive to 60 seconds
+./mqtt-broker --tcp-port 1883 --mqtt-server-keep-alive=60
+
 # Disable multiple features
 ./mqtt-broker --tcp-port 1883 \
   --mqtt-retain-support=false \
@@ -252,7 +267,8 @@ The broker supports optional disabling of MQTT v5.0 features. By default, all fe
   --mqtt-receive-maximum=50 \
   --mqtt-maximum-packet-size=1048576 \
   --mqtt-topic-alias-maximum=10 \
-  --mqtt-auto-map-topic-alias=true
+  --mqtt-auto-map-topic-alias=true \
+  --mqtt-server-keep-alive=60
 ```
 
 ## TLS Configuration

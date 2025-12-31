@@ -87,6 +87,7 @@ pub struct BrokerManager {
     maximum_packet_size: Option<u32>,
     topic_alias_maximum: Option<u16>,
     auto_map_topic_alias: bool,
+    server_keep_alive: Option<u16>,
 }
 
 impl BrokerManager {
@@ -102,6 +103,7 @@ impl BrokerManager {
         maximum_packet_size: Option<u32>,
         topic_alias_maximum: Option<u16>,
         auto_map_topic_alias: bool,
+        server_keep_alive: Option<u16>,
     ) -> anyhow::Result<Self> {
         let subscription_store = Arc::new(SubscriptionStore::new());
         let retained_store = Arc::new(RetainedStore::new());
@@ -130,6 +132,7 @@ impl BrokerManager {
             maximum_packet_size,
             topic_alias_maximum,
             auto_map_topic_alias,
+            server_keep_alive,
         })
     }
 
@@ -145,6 +148,7 @@ impl BrokerManager {
         maximum_packet_size: Option<u32>,
         topic_alias_maximum: Option<u16>,
         auto_map_topic_alias: bool,
+        server_keep_alive: Option<u16>,
         security: Security,
     ) -> anyhow::Result<Self> {
         let subscription_store = Arc::new(SubscriptionStore::new());
@@ -174,6 +178,7 @@ impl BrokerManager {
             maximum_packet_size,
             topic_alias_maximum,
             auto_map_topic_alias,
+            server_keep_alive,
         })
     }
 
@@ -1514,6 +1519,12 @@ impl BrokerManager {
                         mqtt_ep::packet::TopicAliasMaximum::new(topic_alias_maximum).unwrap(),
                     ));
                 }
+                // Add Server Keep Alive property if set
+                if let Some(server_keep_alive) = self.server_keep_alive {
+                    props.push(mqtt_ep::packet::Property::ServerKeepAlive(
+                        mqtt_ep::packet::ServerKeepAlive::new(server_keep_alive).unwrap(),
+                    ));
+                }
 
                 if !props.is_empty() {
                     builder = builder.props(props);
@@ -1639,6 +1650,12 @@ impl BrokerManager {
                 if let Some(topic_alias_maximum) = self.topic_alias_maximum {
                     props.push(mqtt_ep::packet::Property::TopicAliasMaximum(
                         mqtt_ep::packet::TopicAliasMaximum::new(topic_alias_maximum).unwrap(),
+                    ));
+                }
+                // Add Server Keep Alive property if set
+                if let Some(server_keep_alive) = self.server_keep_alive {
+                    props.push(mqtt_ep::packet::Property::ServerKeepAlive(
+                        mqtt_ep::packet::ServerKeepAlive::new(server_keep_alive).unwrap(),
                     ));
                 }
 

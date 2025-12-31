@@ -165,6 +165,12 @@ struct Args {
     /// When enabled, the broker automatically assigns and uses topic aliases for outgoing PUBLISH packets
     #[arg(long = "mqtt-auto-map-topic-alias", default_value_t = false, action = clap::ArgAction::Set)]
     auto_map_topic_alias: bool,
+
+    /// Server Keep Alive (MQTT v5.0 Server Keep Alive)
+    /// Override client's Keep Alive value with this value (default: None - use client's Keep Alive)
+    /// Valid values: 0-65535
+    #[arg(long = "mqtt-server-keep-alive")]
+    server_keep_alive: Option<u16>,
 }
 
 fn validate_qos(s: &str) -> Result<u8, String> {
@@ -490,6 +496,7 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
                     args.maximum_packet_size,
                     args.topic_alias_maximum,
                     args.auto_map_topic_alias,
+                    args.server_keep_alive,
                     security,
                 )
                 .await?
@@ -518,6 +525,7 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
             args.maximum_packet_size,
             args.topic_alias_maximum,
             args.auto_map_topic_alias,
+            args.server_keep_alive,
         )
         .await?
     };
