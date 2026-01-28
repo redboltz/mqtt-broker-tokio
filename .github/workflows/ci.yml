@@ -94,17 +94,22 @@ jobs:
         # Clean previous coverage data and build artifacts
         cargo llvm-cov clean --workspace
         cargo clean
-        # Set up coverage environment variables and build broker binary with instrumentation
-        echo "=== Setting up coverage environment and building mqtt-broker ==="
+        # Set up coverage environment variables
+        echo "=== Setting up coverage environment ==="
         source <(cargo llvm-cov show-env --export-prefix)
+        # Build broker binary with instrumentation
+        echo "=== Building mqtt-broker with coverage instrumentation ==="
         cargo build --bin mqtt-broker --verbose
         # Verify the binary exists and has coverage symbols
         ls -lh target/debug/mqtt-broker* || echo "mqtt-broker binary not found"
         echo "=== Checking for coverage symbols in mqtt-broker ==="
         nm target/debug/mqtt-broker | grep -i "llvm_profile" | head -5 || echo "No coverage symbols found"
-        # Now run tests with coverage - this will use the already-instrumented broker binary
+        # Run tests with regular cargo test (not cargo llvm-cov test) since env is already set
         echo "=== Running tests with coverage ==="
-        cargo llvm-cov test --all-features --workspace --lcov --output-path lcov.info -- --test-threads=1 --nocapture
+        cargo test --all-features --workspace -- --test-threads=1 --nocapture
+        # Generate coverage report
+        echo "=== Generating coverage report ==="
+        cargo llvm-cov report --lcov --output-path lcov.info
         # Debug: List generated profile files
         echo "=== Searching for .profraw files ==="
         find . -name "*.profraw" -type f | head -20
