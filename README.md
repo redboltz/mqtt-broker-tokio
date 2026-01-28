@@ -358,3 +358,21 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
+## Free Trial Broker on Cloud
+
+You can connect to `mqtt-broker-tokio.redboltz.net` for testing purposes.
+
+| Port  | Protocol              |
+|-------|----------------------|
+| 21883 | MQTT (TCP)           |
+| 28883 | MQTT (TLS)           |
+| 20080 | MQTT (WebSocket)     |
+| 20443 | MQTT (WebSocket TLS) |
+| 20443 | MQTT (QUIC/UDP)      |
+
+### Important Notice
+
+**Disclaimer:** This broker is provided "as is" without any warranty. The author assumes no responsibility or liability for any issues, data loss, or damages arising from its use.
+
+You are free to use it for any application, but please do not abuse it or rely on it for anything of importance. This server runs on a very low-spec VPS and is not intended to demonstrate any performance characteristics. Please do not publish anything sensitive, as anybody could be listening.
