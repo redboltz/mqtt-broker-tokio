@@ -280,3 +280,62 @@ async fn test_empty_store() {
     let messages = store.get_matching("any/#").await;
     assert_eq!(messages.len(), 0);
 }
+
+// MQTT v5.0 spec section 4.7.1.2:
+// "sport/tennis/player1/#" must match the parent level "sport/tennis/player1"
+// itself, in addition to its child levels. The "#" wildcard matches the parent
+// and any number of child levels.
+// https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901244
+#[tokio::test]
+async fn test_multi_level_wildcard_matches_parent_level() {
+    let store = RetainedStore::new();
+
+    // Parent level (same depth as the non-wildcard part of the filter)
+    store
+        .store(
+            "sport/tennis/player1",
+            mqtt_ep::packet::Qos::AtMostOnce,
+            "parent".into_payload(),
+            vec![],
+        )
+        .await;
+    // One child level deeper
+    store
+        .store(
+            "sport/tennis/player1/ranking",
+            mqtt_ep::packet::Qos::AtMostOnce,
+            "ranking".into_payload(),
+            vec![],
+        )
+        .await;
+    // Two child levels deeper
+    store
+        .store(
+            "sport/tennis/player1/score/wimbledon",
+            mqtt_ep::packet::Qos::AtMostOnce,
+            "score".into_payload(),
+            vec![],
+        )
+        .await;
+    // A sibling that must NOT match
+    store
+        .store(
+            "sport/tennis/player2",
+            mqtt_ep::packet::Qos::AtMostOnce,
+            "other".into_payload(),
+            vec![],
+        )
+        .await;
+
+    let messages = store.get_matching("sport/tennis/player1/#").await;
+
+    let topics: Vec<&str> = messages.iter().map(|m| m.topic_name.as_str()).collect();
+    assert!(
+        topics.contains(&"sport/tennis/player1"),
+        "# must match the parent level itself"
+    );
+    assert!(topics.contains(&"sport/tennis/player1/ranking"));
+    assert!(topics.contains(&"sport/tennis/player1/score/wimbledon"));
+    assert!(!topics.contains(&"sport/tennis/player2"));
+    assert_eq!(messages.len(), 3);
+}

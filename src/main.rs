@@ -717,6 +717,10 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
                         let _broker = broker_clone.clone();
                         tokio::spawn(async move {
                             // Use accept_async for simpler handling, then check subprotocol
+                            // The Err type is fixed by tungstenite's accept_hdr_async callback
+                            // signature (http::Response<Option<String>>), so its size is out of
+                            // our control.
+                            #[allow(clippy::result_large_err)]
                             let callback = |req: &Request, mut response: Response| {
                                 // Check if client requests MQTT subprotocol
                                 if let Some(protocols) = req.headers().get("Sec-WebSocket-Protocol")
@@ -791,6 +795,10 @@ async fn async_main(log_level: tracing::Level, _threads: usize, args: Args) -> a
                         tokio::spawn(async move {
                             match acceptor.accept(stream).await {
                                 Ok(tls_stream) => {
+                                    // The Err type is fixed by tungstenite's accept_hdr_async
+                                    // callback signature (http::Response<Option<String>>), so its
+                                    // size is out of our control.
+                                    #[allow(clippy::result_large_err)]
                                     let callback = |req: &Request, mut response: Response| {
                                         // Check if client requests MQTT subprotocol
                                         if let Some(protocols) =

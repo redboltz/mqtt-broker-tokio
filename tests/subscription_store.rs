@@ -561,3 +561,57 @@ async fn test_subscription_with_none_sub_id() {
     assert_eq!(subscriptions.len(), 1);
     assert_eq!(subscriptions[0].sub_id, None);
 }
+
+// MQTT v5.0 spec section 4.7.1.2:
+// A subscription to "sport/tennis/player1/#" must receive messages published to
+// the parent level "sport/tennis/player1" itself, as well as to its child levels.
+// The "#" wildcard matches the parent and any number of child levels.
+// https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901244
+#[tokio::test]
+async fn test_multi_level_wildcard_matches_parent_level() {
+    let store = SubscriptionStore::new();
+    let session_ref = create_mock_session_ref("client1");
+
+    store
+        .subscribe(
+            session_ref.clone(),
+            "sport/tennis/player1/#",
+            mqtt_ep::packet::Qos::AtMostOnce,
+            None,
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+
+    let no_filter = None::<fn(&crate::session_store::SessionRef, &str) -> bool>;
+
+    // Parent level (same depth as the non-wildcard part of the filter) must match.
+    let subs = store
+        .find_subscribers("sport/tennis/player1", no_filter)
+        .await;
+    assert_eq!(
+        subs.len(),
+        1,
+        "# must match the parent level \"sport/tennis/player1\" itself"
+    );
+    assert_eq!(subs[0].topic_filter, "sport/tennis/player1/#");
+
+    // One child level deeper must match.
+    let subs = store
+        .find_subscribers("sport/tennis/player1/ranking", no_filter)
+        .await;
+    assert_eq!(subs.len(), 1);
+
+    // Two child levels deeper must match.
+    let subs = store
+        .find_subscribers("sport/tennis/player1/score/wimbledon", no_filter)
+        .await;
+    assert_eq!(subs.len(), 1);
+
+    // A sibling at the parent depth must NOT match.
+    let subs = store
+        .find_subscribers("sport/tennis/player2", no_filter)
+        .await;
+    assert_eq!(subs.len(), 0);
+}
