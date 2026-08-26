@@ -125,12 +125,14 @@ MQTT v5.0 Feature Support:
           Valid values: 0, 1, or 2
           [default: 2]
       --mqtt-receive-maximum <RECEIVE_MAXIMUM>
-          Receive Maximum value (MQTT v5.0 Receive Maximum)
+          Receive Maximum: maximum number of in-flight QoS 1/2 PUBLISH packets accepted from a client
+          Enforced on both MQTT v3.1.1 and v5.0; on v5.0 it is also advertised in CONNACK (Receive Maximum)
           Valid values: 1-65535
           [default: None - no limit]
       --mqtt-maximum-packet-size <MAXIMUM_PACKET_SIZE>
-          Maximum Packet Size (MQTT v5.0 Maximum Packet Size)
-          Valid values: 1-4294967295
+          Maximum Packet Size accepted from a client
+          Enforced on both MQTT v3.1.1 and v5.0; on v5.0 it is also advertised in CONNACK (Maximum Packet Size)
+          Valid values: 1-268435460
           [default: None - no limit]
       --mqtt-topic-alias-maximum <TOPIC_ALIAS_MAXIMUM>
           Topic Alias Maximum (MQTT v5.0 Topic Alias Maximum)
@@ -209,16 +211,16 @@ The broker supports optional disabling of MQTT v5.0 features. By default, all fe
   - Publish QoS exceeding this limit results in DISCONNECT with `QoS not supported` (0x9B)
 
 - **`--mqtt-receive-maximum`**: Control receive maximum
-  - Sets the maximum number of QoS 1 and QoS 2 messages that can be processed concurrently (default: None - no limit)
+  - Sets the maximum number of in-flight QoS 1 and QoS 2 PUBLISH packets accepted from a client (default: None - no limit)
   - Valid values: 1-65535
-  - When set, clients are notified via the `Receive Maximum` property in CONNACK
-  - The underlying mqtt-endpoint-tokio and mqtt-protocol-core libraries handle flow control automatically
+  - Enforced at the connection level on both MQTT v3.1.1 and v5.0; a client exceeding the limit is disconnected
+  - On MQTT v5.0, clients are notified via the `Receive Maximum` property in CONNACK (added automatically by the endpoint)
 
 - **`--mqtt-maximum-packet-size`**: Control maximum packet size
   - Sets the maximum packet size that the broker will accept (default: None - no limit)
-  - Valid values: 1-4294967295 (32-bit unsigned integer)
-  - When set, clients are notified via the `Maximum Packet Size` property in CONNACK
-  - The underlying mqtt-endpoint-tokio and mqtt-protocol-core libraries handle packet size validation automatically
+  - Valid values: 1-268435460
+  - Enforced at the connection level on both MQTT v3.1.1 and v5.0; oversized packets are rejected as soon as the Remaining Length is decoded, before any buffer is allocated
+  - On MQTT v5.0, clients are notified via the `Maximum Packet Size` property in CONNACK (added automatically by the endpoint)
 
 - **`--mqtt-topic-alias-maximum`**: Control topic alias maximum
   - Sets the maximum value of Topic Alias that the broker accepts from clients (default: None - topic aliases not supported)

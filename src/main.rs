@@ -146,13 +146,15 @@ struct Args {
     #[arg(long = "mqtt-maximum-qos", default_value_t = 2, value_parser = validate_qos)]
     maximum_qos: u8,
 
-    /// Receive Maximum value (MQTT v5.0 Receive Maximum)
+    /// Receive Maximum: maximum number of in-flight QoS 1/2 PUBLISH packets accepted from a client
+    /// Enforced on both MQTT v3.1.1 and v5.0; on v5.0 it is also advertised in CONNACK (Receive Maximum)
     /// Valid values: 1-65535 (default: None - no limit)
     #[arg(long = "mqtt-receive-maximum", value_parser = validate_receive_maximum)]
     receive_maximum: Option<u16>,
 
-    /// Maximum Packet Size (MQTT v5.0 Maximum Packet Size)
-    /// Valid values: 1-4294967295 (default: None - no limit)
+    /// Maximum Packet Size accepted from a client
+    /// Enforced on both MQTT v3.1.1 and v5.0; on v5.0 it is also advertised in CONNACK (Maximum Packet Size)
+    /// Valid values: 1-268435460 (default: None - no limit)
     #[arg(long = "mqtt-maximum-packet-size", value_parser = validate_maximum_packet_size)]
     maximum_packet_size: Option<u32>,
 
@@ -202,11 +204,14 @@ fn validate_receive_maximum(s: &str) -> Result<u16, String> {
 }
 
 fn validate_maximum_packet_size(s: &str) -> Result<u32, String> {
+    const MAX: u32 = mqtt_endpoint_tokio::mqtt_ep::connection::MQTT_PACKET_SIZE_NO_LIMIT;
     let value: u32 = s
         .parse()
         .map_err(|_| format!("Invalid Maximum Packet Size value: {s}"))?;
-    if value == 0 {
-        return Err("Maximum Packet Size must be between 1 and 4294967295, got 0".to_string());
+    if value == 0 || value > MAX {
+        return Err(format!(
+            "Maximum Packet Size must be between 1 and {MAX}, got {value}"
+        ));
     }
     Ok(value)
 }
