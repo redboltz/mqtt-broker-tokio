@@ -1,6 +1,6 @@
 [package]
 name = "mqtt-broker-tokio"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 license = "MIT"
 authors = ["Takatoshi Kondo <redboltz@gmail.com>"]
@@ -18,7 +18,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Core MQTT functionality
-mqtt-endpoint-tokio = { version = "0.6.2", default-features = false, features = ["sso-lv10", "tls", "ws", "quic", "unix-socket"] }
+mqtt-endpoint-tokio = { version = "0.6.6", default-features = false, features = ["sso-lv10", "tls", "ws", "quic", "unix-socket"] }
 
 # Application framework
 anyhow = "1.0"

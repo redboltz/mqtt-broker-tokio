@@ -192,9 +192,18 @@ impl BrokerManager {
     where
         T: mqtt_ep::transport::TransportOps + Send + 'static,
     {
-        // Create Endpoint with Version::Undetermined for dual-version support
+        // Create Endpoint with Version::Undetermined for dual-version support.
+        // Receive Maximum / Maximum Packet Size are enforced at the connection level
+        // (on both v3.1.1 and v5.0) and, on v5.0, automatically advertised in CONNACK.
+        let mut conn_options = mqtt_ep::connection::ConnectionOptions::new();
+        if let Some(v) = self.receive_maximum {
+            conn_options = conn_options.receive_maximum(v);
+        }
+        if let Some(v) = self.maximum_packet_size {
+            conn_options = conn_options.maximum_packet_size_recv(v);
+        }
         let endpoint: mqtt_ep::Endpoint<mqtt_ep::role::Server> =
-            mqtt_ep::Endpoint::new(mqtt_ep::Version::Undetermined);
+            mqtt_ep::Endpoint::with_options(mqtt_ep::Version::Undetermined, conn_options);
 
         // Attach the connection (transport setup)
         let mut opts_builder = mqtt_ep::connection_option::ConnectionOption::builder()
@@ -1511,18 +1520,8 @@ impl BrokerManager {
                         mqtt_ep::packet::MaximumQos::new(qos_value).unwrap(),
                     ));
                 }
-                // Add Receive Maximum property if set
-                if let Some(receive_maximum) = self.receive_maximum {
-                    props.push(mqtt_ep::packet::Property::ReceiveMaximum(
-                        mqtt_ep::packet::ReceiveMaximum::new(receive_maximum).unwrap(),
-                    ));
-                }
-                // Add Maximum Packet Size property if set
-                if let Some(maximum_packet_size) = self.maximum_packet_size {
-                    props.push(mqtt_ep::packet::Property::MaximumPacketSize(
-                        mqtt_ep::packet::MaximumPacketSize::new(maximum_packet_size).unwrap(),
-                    ));
-                }
+                // Receive Maximum / Maximum Packet Size properties are added
+                // automatically by the endpoint from ConnectionOptions (see handle_connection)
                 // Add Topic Alias Maximum property if set
                 if let Some(topic_alias_maximum) = self.topic_alias_maximum {
                     props.push(mqtt_ep::packet::Property::TopicAliasMaximum(
@@ -1651,18 +1650,8 @@ impl BrokerManager {
                         mqtt_ep::packet::MaximumQos::new(qos_value).unwrap(),
                     ));
                 }
-                // Add Receive Maximum property if set
-                if let Some(receive_maximum) = self.receive_maximum {
-                    props.push(mqtt_ep::packet::Property::ReceiveMaximum(
-                        mqtt_ep::packet::ReceiveMaximum::new(receive_maximum).unwrap(),
-                    ));
-                }
-                // Add Maximum Packet Size property if set
-                if let Some(maximum_packet_size) = self.maximum_packet_size {
-                    props.push(mqtt_ep::packet::Property::MaximumPacketSize(
-                        mqtt_ep::packet::MaximumPacketSize::new(maximum_packet_size).unwrap(),
-                    ));
-                }
+                // Receive Maximum / Maximum Packet Size properties are added
+                // automatically by the endpoint from ConnectionOptions (see handle_connection)
                 // Add Topic Alias Maximum property if set
                 if let Some(topic_alias_maximum) = self.topic_alias_maximum {
                     props.push(mqtt_ep::packet::Property::TopicAliasMaximum(
